@@ -48,7 +48,6 @@ fn main() {
 
     // --- 1. Initial computation to generate a query ---
     // println!("⚙️  Generating a large query...");
-    // let query = "a".repeat(100_000); // Approx 100 KB
         let mut measurement = Measurement::default();
 
         let num_items = 1 << 15;

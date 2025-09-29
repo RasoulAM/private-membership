@@ -7,7 +7,7 @@
 LINE_COUNT=32768
 
 # Number of characters per line
-CHAR_COUNT=8192
+CHAR_COUNT=4096
 
 # Output filename
 OUTPUT_FILE="db-large.txt"

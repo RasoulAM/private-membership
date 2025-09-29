@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>InsPIRe WebAssembly Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background: #007cba;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #005a87;
+        }
+
+        .output {
+            background: #f5f5f5;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>InsPIRe WebAssembly Demo</h1>
+
+        <div class="section">
+            <h2>Initialize Client</h2>
+            <p>Set up the PIR client with database parameters:</p>
+            <label>Number of items: <input type="number" id="numItems" value="32768" /></label><br>
+            <label>Dimension 0: <input type="number" id="dim0" value="2048" /></label><br>
+            <label>Item size (bits): <input type="number" id="itemSizeBits" value="32768" /></label><br>
+            <button onclick="initializeClient()">Initialize Client</button>
+            <div id="initOutput" class="output"></div>
+        </div>
+
+        <div class="section">
+            <h2>Generate Query</h2>
+            <p>Generate a PIR query for a specific item:</p>
+            <label>Which item to query: <input type="number" id="whichItem" value="12345" /></label><br>
+            <button onclick="generateQuery()" disabled id="queryBtn">Generate Query</button>
+            <div id="queryOutput" class="output"></div>
+        </div>
+
+        <div class="section">
+            <h2>Extract Result</h2>
+            <p>Extract the result from server response (demo with empty data):</p>
+            <button onclick="extractResult()" disabled id="extractBtn">Extract Result (Demo)</button>
+            <div id="extractOutput" class="output"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { ClientQueryState } from './pkg/inspire.js';
+
+        let wasmModule;
+        let client;
+
+        // Initialize the WASM module
+        async function initWasm() {
+            try {
+                wasmModule = await init();
+                document.getElementById('initOutput').textContent = 'WebAssembly module loaded successfully!';
+            } catch (error) {
+                document.getElementById('initOutput').textContent = `Error loading WASM: ${error}`;
+            }
+        }
+
+        // Initialize client
+        window.initializeClient = function () {
+            try {
+                const numItems = parseInt(document.getElementById('numItems').value);
+                const dim0 = parseInt(document.getElementById('dim0').value);
+                const itemSizeBits = parseInt(document.getElementById('itemSizeBits').value);
+
+                client = new ClientQueryState(numItems, dim0, itemSizeBits);
+
+                document.getElementById('initOutput').textContent =
+                    `Client initialized successfully!\n` +
+                    `- Number of items: ${numItems}\n` +
+                    `- Dimension 0: ${dim0}\n` +
+                    `- Item size: ${itemSizeBits} bits`;
+
+                document.getElementById('queryBtn').disabled = false;
+                document.getElementById('extractBtn').disabled = false;
+            } catch (error) {
+                document.getElementById('initOutput').textContent = `Error initializing client: ${error}`;
+            }
+        };
+
+        // Generate query
+        window.generateQuery = function () {
+            if (!client) {
+                document.getElementById('queryOutput').textContent = 'Please initialize client first!';
+                return;
+            }
+
+            try {
+                const whichItem = parseInt(document.getElementById('whichItem').value);
+                const startTime = performance.now();
+
+                const query = client.query(whichItem);
+
+                const endTime = performance.now();
+                const duration = (endTime - startTime).toFixed(2);
+
+                document.getElementById('queryOutput').textContent =
+                    `Query generated successfully!\n` +
+                    `- Target item: ${whichItem}\n` +
+                    `- Query size: ${query.length} bytes\n` +
+                    `- Generation time: ${duration} ms\n` +
+                    `- Query preview: [${Array.from(query.slice(0, 16)).join(', ')}${query.length > 16 ? '...' : ''}]`;
+            } catch (error) {
+                document.getElementById('queryOutput').textContent = `Error generating query: ${error}`;
+            }
+        };
+
+        // Extract result (demo)
+        window.extractResult = function () {
+            if (!client) {
+                document.getElementById('extractOutput').textContent = 'Please initialize client first!';
+                return;
+            }
+
+            try {
+                // Demo with empty response data
+                const demoResponseData = new Uint8Array(1024); // Empty response for demo
+                const whichItem = parseInt(document.getElementById('whichItem').value);
+
+                const startTime = performance.now();
+                const result = client.extract_result(demoResponseData, whichItem);
+                const endTime = performance.now();
+                const duration = (endTime - startTime).toFixed(2);
+
+                document.getElementById('extractOutput').textContent =
+                    `Result extraction completed!\n` +
+                    `- Target item: ${whichItem}\n` +
+                    `- Result size: ${result.length} elements\n` +
+                    `- Extraction time: ${duration} ms\n` +
+                    `- Result preview: [${Array.from(result.slice(0, 8)).join(', ')}${result.length > 8 ? '...' : ''}]\n` +
+                    `Note: This is a demo with empty response data.`;
+            } catch (error) {
+                document.getElementById('extractOutput').textContent = `Error extracting result: ${error}`;
+            }
+        };
+
+        // Initialize WASM on page load
+        initWasm();
+    </script>
+</body>
+
+</html>
