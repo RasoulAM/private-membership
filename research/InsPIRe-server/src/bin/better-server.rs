@@ -1,17 +1,12 @@
-use std::net::TcpListener;
 // use std::io::prelude::*;
-use std::net::TcpStream;
-use std::fs::File;
-use std::thread;
 use std::time::Duration;
+use std::thread;
 
-use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 // use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write, BufRead, BufReader};
 use actix_web::{web, App, HttpServer, HttpResponse, Responder};
+use actix_cors::Cors;
 
 use inspire::packing::PackingType;
 use inspire::scheme::ProtocolType;
@@ -19,6 +14,8 @@ use inspire::scheme::ProtocolType;
 use log::debug;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use serde_json::json;
+
 // use serde::Serialize;
 use spiral_rs::arith::multiply_uint_mod;
 use spiral_rs::arith;
@@ -44,155 +41,8 @@ use std::path::Path;
 use inspire::commons::*;
 use clap::Parser;
 
-
-pub struct ThreadPool {
-	workers: Vec<Worker>,
-	sender: mpsc::Sender<Message>,
-}
-
-trait FnBox {
-	fn call_box(self: Box<Self>);
-}
-
-impl<F: FnOnce()> FnBox for F {
-	fn call_box(self: Box<F>) {
-		(*self)();
-	}
-}
-
-type Job = Box<dyn FnBox + Send + 'static>;
-
-impl ThreadPool {
-	pub fn new(size: usize) -> ThreadPool {
-
-		assert!(size > 0);
-
-		let (sender, receiver) = mpsc::channel();
-
-		let receiver = Arc::new(Mutex::new(receiver));
-
-		let mut workers = Vec::with_capacity(size);
-
-		for id in 0..size {
-			workers.push(Worker::new(id, Arc::clone(&receiver)));
-		}
-
-		ThreadPool {
-			workers,
-			sender,
-		}
-	}
-
-	pub fn execute<F>(&self, f: F)
-		where
-			F: FnOnce() + Send + 'static
-	{
-
-		let job = Box::new(f);
-
-		self.sender.send(Message::NewJob(job)).unwrap();
-
-	}
-}
-
-impl Drop for ThreadPool {
-	fn drop(&mut self) {
-		println!("Sending terminate to all workers");
-
-		for _ in &mut self.workers {
-			self.sender.send(Message::Terminate).unwrap();
-		}
-
-		println!("Shutting down all workers");
-
-		for worker in &mut self.workers {
-			println!("Shutting down worker {}", worker.id);
-
-			if let Some(thread) = worker.thread.take() {
-				thread.join().unwrap();
-			}
-		}
-	}
-}
-
-struct Worker {
-	id: usize,
-	thread: Option<thread::JoinHandle<()>>,
-}
-
-impl Worker {
-
-	fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
-		let thread = thread::spawn(move || {
-			loop {
-				let message = receiver.lock().unwrap().recv().unwrap();
-
-				match message {
-					Message::NewJob(job) => {
-
-						println!("Worker {} got a job; executing.", id);
-
-						job.call_box();
-					},
-					Message::Terminate => {
-						println!("Worker {} was told to terminate", id);
-						break;
-					},
-				}
-
-			}
-		});
-
-		Worker {
-			id,
-			thread: Some(thread),
-		}
-	}
-
-}
-
-enum Message {
-	NewJob(Job),
-	Terminate,
-}
-
-//// Threads end
-
-
-// fn handle_connection(mut stream: TcpStream) {
-
-// 	let mut buffer = [0; 512];
-
-// 	stream.read(&mut buffer).unwrap();
-
-// 	let get = b"GET / HTTP/1.1\r\n";
-// 	let sleep = b"GET /sleep HTTP/1.1\r\n";
-
-// 	let (status_line, filename) = if buffer.starts_with(get) {
-// 		("HTTP/1.1 200 OK\r\n\r\n", "hello.html")
-// 	} else if buffer.starts_with(sleep) {
-// 		thread::sleep(Duration::from_secs(5));
-// 		("HTTP/1.1 200 OK\r\n\r\n", "hello.html")
-// 	} else {
-// 		("HTTP/1.1 404 NOT FOUND\r\n\r\n", "404.html")
-// 	};
-
-//     let mut file = File::open(filename).unwrap();
-//     let mut contents = String::new();
-
-//     file.read_to_string(&mut contents).unwrap();
-
-//     let response = format!("{}{}", status_line, contents);
-
-//     stream.write(response.as_bytes()).unwrap();
-//     stream.flush().unwrap();
-// }
-
-
 pub trait RGSWPIR<'a> {
     
-	fn dummy_func(&self);
-
     fn new_rgswpir<'b>(
         params: &'a Params,
         db: &[u16],
@@ -211,12 +61,12 @@ pub trait RGSWPIR<'a> {
 
     fn handle_connection(
         &self,
-        stream: TcpStream,
+        query_bytes: &Vec<u8>,
         params: &Params,
         packing_params: &'a PackParams,        
         interpolate_degree: usize,
         offline_vals: &OfflinePrecomputedValues<'a>
-    );
+    ) -> Vec<u8>;
     
 }
 
@@ -225,10 +75,6 @@ T: Sized + Copy + ToU64 + Default + std::marker::Sync,
 *const T: ToM512,
 u64: From<T>,
 {
-
-		fn dummy_func(&self) {
-				println!("Just a dummy");
-		}
 
     fn new_rgswpir<'b>(
         params: &'a Params,
@@ -468,7 +314,6 @@ u64: From<T>,
 
         let rgsw_time = Instant::now();
 
-
         let mut ct_gsw = ct_gsw_body.pad_top(1);
 
         for i in 0..ct_gsw.cols {
@@ -524,75 +369,29 @@ u64: From<T>,
 
     }
 
-    fn handle_connection(&self, mut stream: TcpStream, params: &Params, packing_params: &'a PackParams, interpolate_degree: usize, offline_vals: &OfflinePrecomputedValues<'a>) {
-        // Use a dynamically sized vector to store all incoming data.
-        // --- 1. Read the message length prefix ---
-        // Create an 8-byte buffer to hold the size of the incoming data.
-        let mut len_bytes = [0u8; 8];
-        // Read exactly 8 bytes from the stream.
-        if stream.read_exact(&mut len_bytes).is_err() {
-            // If we can't read 8 bytes, the client has likely disconnected.
-            println!("Client disconnected before sending message length.");
-            return;
-        }
-        // Convert the byte array (in big-endian format) to a u64.
-        let len = u64::from_be_bytes(len_bytes);
+    fn handle_connection(&self, received_data: &Vec<u8>, params: &Params, packing_params: &'a PackParams, interpolate_degree: usize, offline_vals: &OfflinePrecomputedValues<'a>) -> Vec<u8> {
 
-        println!("Expecting {} bytes of data.", len);
+        println!("Processing request...");
 
-        // --- 2. Read the message body ---
-        // Create a vector with the exact capacity needed.
-        let mut received_data = vec![0u8; len as usize];
-        // Read exactly `len` bytes into our vector.
-        if stream.read_exact(&mut received_data).is_err() {
-            println!("Failed to read the full message from the client.");
-            return;
-        }
+        let (packing_keys, packed_query_row, ct_gsw_body) = deserialize_everything(&params, &packing_params, received_data.to_vec());
 
-        println!("Received call with {} bytes of data.", received_data.len());
+        let mut measurement = Measurement::default();
 
-        // --- 3. Simulate processing the request ---
-            println!("Processing request...");
+        println!("Starting online...");
 
-            let (packing_keys, packed_query_row, ct_gsw_body) = deserialize_everything(&params, &packing_params, received_data);
+        let sum_switched = self.perform_online_computation_simplepir_and_rgsw(
+            interpolate_degree,
+            packed_query_row.as_slice(),
+            ct_gsw_body,
+            &offline_vals,
+            &mut packing_keys.clone(),
+            Some(&mut measurement),
+        );
 
-            let mut measurement = Measurement::default();
+        let response = sum_switched.concat();
+        println!("...Processing complete.");
 
-            println!("Starting online...");
-
-            // let gamma = params.poly_len;
-            // let packing_type = PackingType::InspiRING;
-    
-            // let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
-            // let db_cols = params.instances * params.poly_len;    
-
-            // let db_cols_prime = db_cols / gamma;
-            // let c = db_cols_prime / interpolate_degree;
-
-            let sum_switched = self.perform_online_computation_simplepir_and_rgsw(
-                interpolate_degree,
-                packed_query_row.as_slice(),
-                ct_gsw_body,
-                &offline_vals,
-                &mut packing_keys.clone(),
-                Some(&mut measurement),
-            );
-
-            // println!("c: {}", c);
-            // println!("sum_switched: {}", sum_switched.len());
-
-            let response = sum_switched.concat();
-            println!("...Processing complete.");
-
-        // --- 4. Send a response ---
-        // let response = "Hello from the server! Your large request was processed.";
-        // The stream is still open, so we can write back to it.
-        if stream.write_all(response.as_slice()).is_err() {
-            println!("Failed to write response to client.");
-        }
-        if stream.flush().is_err() {
-            println!("Failed to flush stream.");
-        }
+        response
 
     }
 
@@ -601,6 +400,10 @@ u64: From<T>,
 
 /// Holds all the application state that needs to be shared across requests.
 struct AppState<'a, T: std::marker::Sync> {
+    num_items: usize,
+    dim0: usize,
+    item_size_bits: usize,
+    key_to_row: HashMap<String, usize>,
     y_server: Arc<YServer<'a, T>>,
     params: Arc<Params>,
     packing_params: Arc<PackParams<'a>>,
@@ -609,16 +412,31 @@ struct AppState<'a, T: std::marker::Sync> {
 }
 
 /// Handler for the "/setup" endpoint.
-async fn setup_endpoint() -> impl Responder {
+async fn setup_endpoint<T: std::marker::Sync>(
+    data: web::Data<AppState<'_, T>>,
+) -> impl Responder {
     // You can implement your setup logic here.
-    HttpResponse::Ok().body("✅ Setup endpoint is ready.")
+
+    let obj = json!({
+        "num_items": data.num_items,
+        "dim0": data.dim0,
+        "item_size_bits": data.item_size_bits,
+        "key_to_row": data.key_to_row
+    });
+
+    let json_str = obj.to_string();
+    HttpResponse::Ok().body(json_str)
+
 }
 
 /// Handler for the "/query" endpoint.
-async fn query_endpoint<T: std::marker::Sync>(
+async fn query_endpoint<T>(
     data: web::Data<AppState<'_, T>>,
     query_bytes: web::Bytes,
-) -> impl Responder {
+) -> impl Responder where
+T: Sized + Copy + ToU64 + Default + std::marker::Sync,
+*const T: ToM512,
+u64: From<T>, {
     // This function now receives the entire query as a byte payload from the client.
     // It calls a separate function to process the query and get the response bytes.
     let response_bytes = process_pir_query::<T>(
@@ -644,32 +462,21 @@ async fn query_endpoint<T: std::marker::Sync>(
 /// For example, where `handle_connection` would have done `stream.read(...)`, this function
 /// will use the `query_bytes` slice. Where it would have done `stream.write(...)`, this
 /// function will build and return a `Vec<u8>`.
-fn process_pir_query<T: std::marker::Sync>(
-    _y_server: &YServer<T>,
-    _params: &Params,
-    _packing_params: &PackParams,
-    _interpolate_degree: usize,
-    _offline_values: &Arc<OfflinePrecomputedValues<'_>>,
+fn process_pir_query<T>(
+    y_server: &YServer<T>,
+    params: &Params,
+    packing_params: &PackParams,
+    interpolate_degree: usize,
+    offline_values: &Arc<OfflinePrecomputedValues<'_>>,
     query_bytes: &[u8],
-) -> Vec<u8> {
-    // ====================================================================================
-    // IMPORTANT: This is a placeholder.
-    // You must replace this with the actual query processing logic from your
-    // original `handle_connection` function.
-    // ====================================================================================
+) -> Vec<u8> where
+T: Sized + Copy + ToU64 + Default + std::marker::Sync,
+*const T: ToM512,
+u64: From<T>, {
 
     println!("Received a query of {} bytes.", query_bytes.len());
 
-    // Example of what your logic might look like:
-    // let client_query = deserialize_from_bytes(query_bytes);
-    // let server_response = y_server.process_query(client_query, ...);
-    // let response_bytes = serialize_to_bytes(server_response);
-    // return response_bytes;
-
-    // For now, returning a dummy response.
-    let dummy_response = "This is a placeholder response.".as_bytes().to_vec();
-    println!("Sending a dummy response of {} bytes.", dummy_response.len());
-    dummy_response
+	y_server.handle_connection(&query_bytes.to_vec(), &params, &packing_params, interpolate_degree, &offline_values)
 }
 
 
@@ -684,7 +491,6 @@ struct Args {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 
-
 	let args = Args::parse();
 	let Args {
 			path_to_db
@@ -695,16 +501,22 @@ async fn main() -> std::io::Result<()> {
 	// --- Initial processing before starting the server ---
 	println!("🚀 Performing initial setup...");
 
-	let num_items = 1 << 15;
-	let dim0 = 2048;
-	let item_size_base = 16 * 2048;
-	let factor = 1;
-	let item_size_bits = factor * item_size_base;
+    // let num_items = 1 << 12;
+    let dim0 = 2048;
+    let item_size_base_bits = 16 * 2048;
+    let number_of_sub_databases = 8;
+    let item_size_bits = number_of_sub_databases * item_size_base_bits;
 
+    let item_size_base_elements= item_size_base_bits / 16;
+    let item_size_elements= item_size_bits / 16;
 
-	let item_size_base_elements= item_size_base / 16;
-	let item_size_elements= item_size_bits / 16;
+	let filename = path_to_db;
+	let (num_items, read_db, key_to_row) = read_json_into_matrix(Path::new(&filename), item_size_bits).unwrap();
+    
+    assert_eq!(read_db.len(), num_items);
+    assert_eq!(read_db[0].len(), item_size_elements);
 
+    println!("num_items: {}", num_items);
 	println!(
 			"Protocol=InsPIRe, DB={} KB",
 			(num_items * item_size_bits) / 8192
@@ -714,6 +526,8 @@ async fn main() -> std::io::Result<()> {
 			= params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, dim0);
 	let params_static: &'static Params = Box::leak(Box::new(params_raw.clone()));
 
+    // println!("interpolate_degree: {}", interpolate_degree);
+
 	let params = Arc::new(params_raw);
 
 	let packing_params_raw = PackParams::new(&params_static, params.poly_len);
@@ -722,28 +536,62 @@ async fn main() -> std::io::Result<()> {
 	let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
 	let db_cols = params.instances * params.poly_len;
 
-	// let filename = "db-large.txt";
-	let filename = path_to_db;
-
 	println!("📦 Reading and processing '{}'...", filename);
 
-	let per = num_items / db_rows;
-	let read_db = read_file_into_matrix(Path::new(&filename), num_items, item_size_bits).unwrap();
-	assert_eq!(read_db.len(), num_items);
-	assert_eq!(read_db[0].len(), item_size_elements);
-	let mut actual_db: Vec<u16> = vec![0; db_cols*db_rows];
-	for i in 0..num_items {
-			// for k in 0..factor {
-					for j in 0..item_size_elements {
-							let j_prime = j % item_size_base_elements;
-							let pass =  j / item_size_base_elements;
+    let items_per_row = num_items / db_rows;
 
-							let new_i = i / per;
-							let new_j = pass * per * item_size_base_elements + (i % per) * item_size_base_elements + j_prime;
-							actual_db[new_j * db_rows + new_i] = read_db[i][j];
-					}
-			// }
-	}
+    assert!(items_per_row == interpolate_degree);
+
+    // split the database into number_of_sub_databases sub-databases by splitting each row into number_of_sub_databases sub-rows
+    // each database takes one of the large columns
+    let mut sub_databases: Vec<Vec<Vec<u16>>> = Vec::with_capacity(number_of_sub_databases);
+    for k in 0..number_of_sub_databases {
+        let mut temp_sub_database: Vec<Vec<u16>> = Vec::with_capacity(db_rows);
+        for i in 0..num_items {
+            temp_sub_database.push(read_db[i][k*item_size_base_elements .. (k + 1) * item_size_base_elements].to_vec());
+        }
+        sub_databases.push(temp_sub_database);
+    }
+
+    assert_eq!(sub_databases.len(), number_of_sub_databases);
+    assert_eq!(sub_databases[0].len(), num_items);
+    assert_eq!(sub_databases[0][0].len(), item_size_base_elements);
+
+    let mut resized_sub_databases: Vec<Vec<Vec<u16>>> = Vec::with_capacity(number_of_sub_databases);
+    for k in 0..number_of_sub_databases {
+        // take the k-th sub-database
+        // flatten `items_per_row` consecutive rows into one
+        let mut temp_resized_sub_database: Vec<Vec<u16>> = Vec::with_capacity(db_rows);
+        for i in 0..db_rows {
+            temp_resized_sub_database.push(sub_databases[k][i*items_per_row .. (i + 1) * items_per_row].iter().flatten().copied().collect());
+        }
+        resized_sub_databases.push(temp_resized_sub_database);
+    }
+
+    assert_eq!(resized_sub_databases.len(), number_of_sub_databases);
+    assert_eq!(resized_sub_databases[0].len(), db_rows);
+    assert_eq!(resized_sub_databases[0][0].len(), items_per_row*item_size_base_elements);
+
+    // append the corresponding rows of the sub-databases
+    let mut resized_db: Vec<Vec<u16>> = Vec::with_capacity(db_rows);
+    for i in 0..db_rows {
+        let mut temp_row: Vec<u16> = Vec::with_capacity(item_size_elements);
+        for k in 0..number_of_sub_databases {
+            temp_row.extend(resized_sub_databases[k][i].iter().copied());
+        }
+        resized_db.push(temp_row);
+    }
+
+    assert_eq!(resized_db.len(), db_rows);
+    assert_eq!(resized_db[0].len(), items_per_row*item_size_elements);
+    assert_eq!(resized_db[0].len(), db_cols);
+
+    let mut actual_db: Vec<u16> = Vec::with_capacity(db_rows*db_cols);
+    for j in 0..db_cols {
+        for i in 0..db_rows {
+            actual_db.push(resized_db[i][j]);
+        }
+    }
 
 	type T = u16;
 	let gamma = params.poly_len;
@@ -774,6 +622,10 @@ async fn main() -> std::io::Result<()> {
 
 	// --- Create the shared application state for Actix ---
 	let app_state = web::Data::new(AppState {
+            num_items,
+            dim0,
+            item_size_bits,
+            key_to_row,
 			y_server: Arc::clone(&y_server),
 			params: Arc::clone(&params),
 			packing_params: Arc::clone(&packing_params),
@@ -786,46 +638,20 @@ async fn main() -> std::io::Result<()> {
 	println!("📡 Starting HTTP server on http://127.0.0.1:8081");
 	HttpServer::new(move || {
 			App::new()
+					.wrap(
+							Cors::default()
+									.allow_any_origin()
+									.allow_any_method()
+									.allow_any_header()
+									.max_age(3600)
+					)
 					.app_data(app_state.clone()) // Share the state with all handlers
-					.route("/setup", web::post().to(setup_endpoint))
+					.app_data(web::PayloadConfig::new(10 * 1024 * 1024)) // Set 100MB payload limit for large PIR queries
+					.route("/setup", web::get().to(setup_endpoint::<T>))
 					.route("/query", web::post().to(query_endpoint::<T>))
 	})
 	.bind(("127.0.0.1", 8081))?
 	.run()
 	.await
-
-
-	// let listener = TcpListener::bind("127.0.0.1:8081").unwrap();
-	// let pool = ThreadPool::new(4);
-
-	// for stream in listener.incoming() {
-
-	// 	let stream = stream.unwrap();
-
-	// 	let y_server_cloned = Arc::clone(&y_server);
-	// 	let params_cloned = Arc::clone(&params);
-	// 	let packing_params_cloned = Arc::clone(&packing_params);
-	// 	let offline_values_cloned = Arc::clone(&offline_values);
-
-	// 	pool.execute(move || {
-
-
-	// 		let mut command = String::new();
-	// 		// Read the first line from the client. This line determines the route.
-	//     let mut reader = BufReader::new(&stream);
-	// 		if let Err(e) = reader.read_line(&mut command) {
-	// 				eprintln!("ERROR: Failed to read command from client: {}", e);
-	// 				return;
-	// 		}
-
-	// 		// Handle the connection directly in the main loop.
-	// 		// The server will block here until the connection is handled
-	// 		// before accepting the next one.
-	// 		y_server_cloned.handle_connection(stream, &params_cloned, &packing_params_cloned, interpolate_degree, &offline_values_cloned);
-	// 		println!("--- Connection handled and closed. Waiting for next call... ---");
-
-	// 	});
-
-	// }
 
 }

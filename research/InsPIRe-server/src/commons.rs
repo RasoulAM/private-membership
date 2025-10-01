@@ -1,14 +1,19 @@
 use super::packing::PackingType;
+use actix_web::body::MessageBody;
+use serde_json::Value;
 use spiral_rs::aligned_memory::AlignedMemory64;
 use spiral_rs::{
     params::*,
 };
 use spiral_rs::poly::{PolyMatrix, PolyMatrixNTT};
 use super::{packing::*, params::*};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 use pad::PadStr;
+
+use std::cmp::min;
 
 pub const RGSW_SEEDS: [[u8; 32]; 6] = [
     [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,],
@@ -149,7 +154,7 @@ pub fn params_rgswpir_given_input_size_and_dim0<'a>(input_num_items: usize, inpu
     let input_item_size_bits = input_item_size_bits * factor;
 
     let padded_item_size_num_bits = ((input_item_size_bits as f64) / bits_per_poly).ceil() as usize * bits_per_poly as usize; 
-    let padded_item_num_pts = (padded_item_size_num_bits as f64 / log_p as f64).ceil() as usize; // -> number of pt modului required to represent one item
+    let padded_item_num_pts = padded_item_size_num_bits / log_p; // -> number of pt modului required to represent one item
 
     let dim1_lower_bound = padded_item_num_pts * (input_num_items as f64 / dim0 as f64).ceil() as usize; 
     let mut current_dim1 = padded_item_num_pts;
@@ -184,6 +189,7 @@ pub fn params_rgswpir_given_input_size_and_dim0<'a>(input_num_items: usize, inpu
 
 pub fn read_file_into_matrix(path: &Path, num_items: usize, item_size_bits: usize) -> io::Result<Vec<Vec<u16>>> {
     let file = File::open(path)?;
+    
     // Use a BufReader for efficient, buffered I/O.
     let reader = BufReader::new(file);
 
@@ -215,4 +221,63 @@ pub fn read_file_into_matrix(path: &Path, num_items: usize, item_size_bits: usiz
     }
 
     Ok(matrix)
+}
+
+pub fn read_json_into_matrix(path: &Path, item_size_bits: usize) -> io::Result<(usize, Vec<Vec<u16>>, HashMap<String, usize>)> {
+    let file = File::open(path)?;
+    let json: Value = serde_json::from_reader(file).expect("JSON was not well-formatted");
+
+    // Pre-allocate the outer vector since we know the number of items.
+    let mut matrix: Vec<Vec<u16>> = Vec::new();
+    let mut key_to_row: HashMap<String, usize> = HashMap::new();
+
+    // Parse the JSON structure: { "key": { "t": "title", "s": "content", "sl": "slug" } }
+    if let Value::Object(outer_map) = json {
+        let mut row_number = 0;
+        
+        for (key, value) in outer_map {
+            // if row_number >= num_items {
+            //     break; // Don't exceed the specified number of items
+            // }
+            
+            if let Value::Object(inner_map) = value {
+                // Extract the content from the "s" field
+                if let Some(Value::String(content)) = inner_map.get("s") {
+                    // Pad the content to the required size
+                    let mut content_length_bytes = content.len().to_be_bytes().to_vec();
+                    if content.len() > item_size_bits / 8 - 8 {
+                        continue;
+                    }
+                    let padded_with_zeros_content = content.pad_to_width(item_size_bits / 8 - 8);
+                    content_length_bytes.extend_from_slice(padded_with_zeros_content.as_bytes());
+
+                    // Process the content as a byte slice for performance with ASCII.
+                    let row: Vec<u16> = content_length_bytes
+                        // Group the bytes into non-overlapping chunks of 2.
+                        .chunks_exact(2)
+                        // Map each pair of bytes [c1, c2] to a single u16.
+                        .map(|chunk| {
+                            // Pack two 8-bit bytes into one 16-bit integer.
+                            // The first byte becomes the "high" byte, the second is the "low" byte.
+                            (chunk[0] as u16) << 8 | (chunk[1] as u16)
+                        })
+                        .collect();
+                    
+                    matrix.push(row);
+                    key_to_row.insert(key, row_number);
+                    row_number += 1;
+                }
+            }
+        }
+    }
+
+    // num_items is the smallest power of 2 greater than the number of items in the database, but it must be at least 2048
+    let num_items = std::cmp::max(2048, 1 << (matrix.len().next_power_of_two().trailing_zeros() as usize));
+    
+    // Fill remaining slots with zero vectors if needed
+    while matrix.len() < num_items {
+        matrix.push(vec![0u16; item_size_bits / 16]);
+    }
+
+    Ok((num_items, matrix, key_to_row))
 }

@@ -23,6 +23,7 @@ rayon = "1.7"
 tqdm = "0.7.0"
 pad = "0.1.6" # Or the latest version
 actix-web = "4"
+actix-cors = "0.7"
 
 # [profile.release]
 # lto = "fat"

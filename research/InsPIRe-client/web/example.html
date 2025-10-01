@@ -35,6 +35,11 @@
             background: #005a87;
         }
 
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
         .output {
             background: #f5f5f5;
             padding: 10px;
@@ -50,6 +55,138 @@
             border: 1px solid #ddd;
             border-radius: 3px;
         }
+
+        .autocomplete-container {
+            position: relative;
+            display: inline-block;
+            width: 300px;
+        }
+
+        .autocomplete-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+
+        .autocomplete-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-top: none;
+            border-radius: 0 0 3px 3px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+
+        .autocomplete-suggestion {
+            padding: 8px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+
+        .autocomplete-suggestion:hover,
+        .autocomplete-suggestion.selected {
+            background: #f0f8ff;
+        }
+
+        .autocomplete-suggestion:last-child {
+            border-bottom: none;
+        }
+
+        .query-result {
+            background: #e8f5e8;
+            border: 1px solid #4caf50;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+
+        .error {
+            background: #ffe8e8;
+            border: 1px solid #f44336;
+            color: #d32f2f;
+        }
+
+        .loading {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            color: #856404;
+        }
+
+        .current-query {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+
+        .article-content {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            font-family: 'Georgia', serif;
+            line-height: 1.6;
+        }
+
+        .article-content h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+            margin-bottom: 30px;
+        }
+
+        .article-content h2 {
+            color: #34495e;
+            margin-top: 40px;
+            margin-bottom: 20px;
+        }
+
+        .article-content h3 {
+            color: #34495e;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+
+        .article-content p {
+            margin-bottom: 15px;
+            text-align: justify;
+        }
+
+        .internal-link {
+            color: #3498db;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .internal-link:hover {
+            color: #2980b9;
+            text-decoration: underline;
+            background-color: rgba(52, 152, 219, 0.1);
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .internal-link:active {
+            background-color: rgba(52, 152, 219, 0.2);
+        }
+
+        .external-link {
+            color: #e74c3c;
+            text-decoration: none;
+        }
+
+        .external-link:hover {
+            color: #c0392b;
+            text-decoration: underline;
+        }
     </style>
 </head>
 
@@ -60,34 +197,174 @@
         <div class="section">
             <h2>Initialize Client</h2>
             <p>Set up the PIR client with database parameters:</p>
-            <label>Number of items: <input type="number" id="numItems" value="32768" /></label><br>
-            <label>Dimension 0: <input type="number" id="dim0" value="2048" /></label><br>
-            <label>Item size (bits): <input type="number" id="itemSizeBits" value="32768" /></label><br>
+            <label>Number of items: <input type="number" id="numItems" value="32768" readonly /></label><br>
+            <label>Dimension 0: <input type="number" id="dim0" value="2048" readonly /></label><br>
+            <label>Item size (bits): <input type="number" id="itemSizeBits" value="32768" readonly /></label><br>
             <button onclick="initializeClient()">Initialize Client</button>
             <div id="initOutput" class="output"></div>
         </div>
 
         <div class="section">
-            <h2>Generate Query</h2>
-            <p>Generate a PIR query for a specific item:</p>
-            <label>Which item to query: <input type="number" id="whichItem" value="12345" /></label><br>
-            <button onclick="generateQuery()" disabled id="queryBtn">Generate Query</button>
+            <h2>Search and Query</h2>
+            <p>Search for an item by key and perform a PIR query:</p>
+
+            <div class="current-query" id="currentQuery" style="display: none;">
+                <strong>Current Query:</strong> <span id="currentQueryKey"></span> (Row: <span
+                    id="currentQueryRow"></span>)
+            </div>
+
+            <div class="autocomplete-container">
+                <input type="text" id="searchInput" class="autocomplete-input"
+                    placeholder="Start typing to search for items..." disabled />
+                <div id="suggestions" class="autocomplete-suggestions"></div>
+            </div>
+            <br><br>
+
+            <button onclick="performFullQuery()" disabled id="fullQueryBtn">Perform Full Query</button>
             <div id="queryOutput" class="output"></div>
         </div>
 
         <div class="section">
-            <h2>Extract Result</h2>
-            <p>Extract the result from server response (demo with empty data):</p>
-            <button onclick="extractResult()" disabled id="extractBtn">Extract Result (Demo)</button>
-            <div id="extractOutput" class="output"></div>
+            <h2>Query Results</h2>
+            <p>Results from the PIR query:</p>
+            <div id="resultsOutput" class="output"></div>
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
     <script type="module">
         import init, { ClientQueryState } from './pkg/inspire.js';
 
         let wasmModule;
         let client;
+        let serverParams = null;
+        let keyToRow = {};
+        let allKeys = [];
+        let selectedKey = null;
+        let selectedRow = null;
+
+        // WikiRenderer class for decompressing and rendering content
+        class WikiRenderer {
+            constructor() {
+                this.linkRegex = /\[\[([^\]|]+)(\|([^\]]+))?\]\]/g;
+                this.boldRegex = /'''([^']+)'''/g;
+                this.italicRegex = /''([^']+)''/g;
+                this.externalLinkRegex = /\[([^\s\]]+)\s*([^\]]*)\]/g;
+            }
+
+            decompressContent(compressedBase64) {
+                console.log('Decompressing content:', compressedBase64);
+                try {
+                    // Decode base64 to binary string
+                    const compressedBinary = atob(compressedBase64);
+
+                    // Convert binary string to Uint8Array
+                    const uint8Array = new Uint8Array(compressedBinary.length);
+                    for (let i = 0; i < compressedBinary.length; i++) {
+                        uint8Array[i] = compressedBinary.charCodeAt(i);
+                    }
+
+                    // Decompress using pako
+                    const decompressed = pako.inflate(uint8Array, { to: 'string' });
+
+                    // Parse the JSON
+                    return JSON.parse(decompressed);
+                } catch (error) {
+                    console.error('Decompression failed:', error);
+                    // Fallback to treating it as uncompressed data
+                    try {
+                        return JSON.parse(compressedBase64);
+                    } catch (fallbackError) {
+                        console.error('Fallback parsing failed:', fallbackError);
+                        return [];
+                    }
+                }
+            }
+
+            renderSections(sections) {
+                let html = '';
+                sections.forEach(section => {
+                    if (section[0] === 1) {
+                        // Heading: [1, level, text]
+                        const level = section[1];
+                        const text = this.renderText(section[2]);
+                        html += `<h${level}>${text}</h${level}>`;
+                    } else if (section[0] === 0) {
+                        // Content: [0, text]
+                        html += this.renderContent(section[1]);
+                    }
+                });
+                return html;
+            }
+
+            renderContent(text) {
+                const paragraphs = text.split('\n\n').filter(p => p.trim());
+                let html = '';
+
+                paragraphs.forEach(paragraph => {
+                    paragraph = paragraph.trim();
+                    if (paragraph.includes('\n* ')) {
+                        html += this.renderList(paragraph, 'ul');
+                    } else if (paragraph.includes('\n# ')) {
+                        html += this.renderList(paragraph, 'ol');
+                    } else if (paragraph.startsWith('* ')) {
+                        html += this.renderList(paragraph, 'ul');
+                    } else if (paragraph.startsWith('# ')) {
+                        html += this.renderList(paragraph, 'ol');
+                    } else {
+                        html += `<p>${this.renderText(paragraph)}</p>`;
+                    }
+                });
+
+                return html;
+            }
+
+            renderText(text) {
+                // Convert internal links
+                text = text.replace(this.linkRegex, (match, target, _, display) => {
+                    const linkText = display || target;
+                    const slug = this.slugify(target.trim());
+                    return `<a href="#" class="internal-link" data-target="${target.trim()}">${linkText.trim()}</a>`;
+                });
+
+                // Convert external links
+                text = text.replace(this.externalLinkRegex, (match, url, display) => {
+                    const linkText = display || url;
+                    return `<a href="${url}" class="external-link" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
+                });
+
+                // Convert bold and italic
+                text = text.replace(this.boldRegex, '<strong>$1</strong>');
+                text = text.replace(this.italicRegex, '<em>$1</em>');
+
+                return text;
+            }
+
+            renderList(text, listType) {
+                const lines = text.split('\n');
+                let html = `<${listType}>`;
+
+                lines.forEach(line => {
+                    if (line.startsWith('* ') || line.startsWith('# ')) {
+                        html += `<li>${this.renderText(line.substring(2))}</li>`;
+                    }
+                });
+
+                html += `</${listType}>`;
+                return html;
+            }
+
+            slugify(text) {
+                return text.toLowerCase()
+                    .replace(/[^\w\s-]/g, '')
+                    .replace(/\s+/g, '-')
+                    .replace(/-+/g, '-')
+                    .trim('-');
+            }
+        }
+
+        // Create WikiRenderer instance
+        const wikiRenderer = new WikiRenderer();
 
         // Initialize the WASM module
         async function initWasm() {
@@ -100,85 +377,391 @@
         }
 
         // Initialize client
-        window.initializeClient = function () {
+        window.initializeClient = async function () {
             try {
-                const numItems = parseInt(document.getElementById('numItems').value);
-                const dim0 = parseInt(document.getElementById('dim0').value);
-                const itemSizeBits = parseInt(document.getElementById('itemSizeBits').value);
+                // Show loading message
+                document.getElementById('initOutput').textContent = 'Fetching parameters from server...';
 
-                client = new ClientQueryState(numItems, dim0, itemSizeBits);
+                // Fetch parameters from server
+                const response = await fetch('http://localhost:8081/setup');
+
+                if (!response.ok) {
+                    throw new Error(`Server request failed: ${response.status} ${response.statusText}`);
+                }
+
+                serverParams = await response.json();
+
+                // Validate server response
+                if (typeof serverParams.num_items !== 'number' ||
+                    typeof serverParams.dim0 !== 'number' ||
+                    typeof serverParams.item_size_bits !== 'number' ||
+                    typeof serverParams.key_to_row !== 'object') {
+                    throw new Error('Invalid server response format');
+                }
+
+                // Store key_to_row mapping and extract all keys
+                keyToRow = serverParams.key_to_row;
+                allKeys = Object.keys(keyToRow).sort();
+
+                // Update UI inputs with server values
+                document.getElementById('numItems').value = serverParams.num_items;
+                document.getElementById('dim0').value = serverParams.dim0;
+                document.getElementById('itemSizeBits').value = serverParams.item_size_bits;
+
+                // Initialize client with server parameters
+                client = new ClientQueryState(
+                    serverParams.num_items,
+                    serverParams.dim0,
+                    serverParams.item_size_bits
+                );
 
                 document.getElementById('initOutput').textContent =
-                    `Client initialized successfully!\n` +
-                    `- Number of items: ${numItems}\n` +
-                    `- Dimension 0: ${dim0}\n` +
-                    `- Item size: ${itemSizeBits} bits`;
+                    `Client initialized successfully with server parameters!\n` +
+                    `- Number of items: ${serverParams.num_items}\n` +
+                    `- Dimension 0: ${serverParams.dim0}\n` +
+                    `- Item size: ${serverParams.item_size_bits} bits\n` +
+                    `- Available keys: ${allKeys.length}`;
 
-                document.getElementById('queryBtn').disabled = false;
-                document.getElementById('extractBtn').disabled = false;
+                // Enable search input and setup autocomplete
+                document.getElementById('searchInput').disabled = false;
+                setupAutocomplete();
+
+                // Update URL if there's a hash
+                handleUrlChange();
+
             } catch (error) {
-                document.getElementById('initOutput').textContent = `Error initializing client: ${error}`;
+                document.getElementById('initOutput').textContent = `Error initializing client: ${error.message}`;
+                console.error('Client initialization error:', error);
             }
         };
 
-        // Generate query
-        window.generateQuery = function () {
-            if (!client) {
-                document.getElementById('queryOutput').textContent = 'Please initialize client first!';
+        // Setup autocomplete functionality
+        function setupAutocomplete() {
+            const searchInput = document.getElementById('searchInput');
+            const suggestionsDiv = document.getElementById('suggestions');
+            let selectedIndex = -1;
+
+            searchInput.addEventListener('input', function () {
+                const query = this.value.toLowerCase();
+                if (query.length === 0) {
+                    suggestionsDiv.style.display = 'none';
+                    return;
+                }
+
+                const matches = allKeys.filter(key =>
+                    key.toLowerCase().includes(query)
+                ).slice(0, 10); // Limit to 10 suggestions
+
+                if (matches.length === 0) {
+                    suggestionsDiv.style.display = 'none';
+                    return;
+                }
+
+                suggestionsDiv.innerHTML = matches.map((key, index) =>
+                    `<div class="autocomplete-suggestion" data-key="${key}" data-index="${index}">${key}</div>`
+                ).join('');
+
+                suggestionsDiv.style.display = 'block';
+                selectedIndex = -1;
+            });
+
+            searchInput.addEventListener('keydown', function (e) {
+                const suggestions = suggestionsDiv.querySelectorAll('.autocomplete-suggestion');
+
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    selectedIndex = Math.min(selectedIndex + 1, suggestions.length - 1);
+                    updateSelection(suggestions);
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    selectedIndex = Math.max(selectedIndex - 1, -1);
+                    updateSelection(suggestions);
+                } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (selectedIndex >= 0 && suggestions[selectedIndex]) {
+                        selectKey(suggestions[selectedIndex].dataset.key);
+                    }
+                } else if (e.key === 'Escape') {
+                    suggestionsDiv.style.display = 'none';
+                    selectedIndex = -1;
+                }
+            });
+
+            suggestionsDiv.addEventListener('click', function (e) {
+                if (e.target.classList.contains('autocomplete-suggestion')) {
+                    selectKey(e.target.dataset.key);
+                }
+            });
+
+            // Close suggestions when clicking outside
+            document.addEventListener('click', function (e) {
+                if (!searchInput.contains(e.target) && !suggestionsDiv.contains(e.target)) {
+                    suggestionsDiv.style.display = 'none';
+                }
+            });
+
+            function updateSelection(suggestions) {
+                suggestions.forEach((suggestion, index) => {
+                    suggestion.classList.toggle('selected', index === selectedIndex);
+                });
+            }
+        }
+
+        // Select a key and update UI
+        function selectKey(key) {
+            selectedKey = key;
+            selectedRow = keyToRow[key];
+
+            document.getElementById('searchInput').value = key;
+            document.getElementById('suggestions').style.display = 'none';
+
+            // Update current query display
+            document.getElementById('currentQueryKey').textContent = key;
+            document.getElementById('currentQueryRow').textContent = selectedRow;
+            document.getElementById('currentQuery').style.display = 'block';
+
+            // Enable query button
+            document.getElementById('fullQueryBtn').disabled = false;
+
+            // Update URL
+            window.location.hash = encodeURIComponent(key);
+        }
+
+        // Handle URL changes (back/forward navigation)
+        window.addEventListener('hashchange', handleUrlChange);
+
+        function handleUrlChange() {
+            const hash = window.location.hash.slice(1);
+            if (hash && keyToRow && keyToRow[decodeURIComponent(hash)]) {
+                const key = decodeURIComponent(hash);
+                if (key !== selectedKey) {
+                    selectKey(key);
+                }
+            }
+        }
+
+        // Perform full query (generate query, send to server, extract result)
+        window.performFullQuery = async function () {
+            if (!client || !selectedKey || selectedRow === null) {
+                document.getElementById('queryOutput').textContent = 'Please select a key first!';
                 return;
             }
 
             try {
-                const whichItem = parseInt(document.getElementById('whichItem').value);
-                const startTime = performance.now();
+                // Clear previous results
+                document.getElementById('resultsOutput').textContent = '';
 
-                const query = client.query(whichItem);
+                // Step 1: Generate query
+                document.getElementById('queryOutput').textContent = 'Generating query...';
+                document.getElementById('queryOutput').className = 'output loading';
 
-                const endTime = performance.now();
-                const duration = (endTime - startTime).toFixed(2);
+                const queryStartTime = performance.now();
+                const queryData = client.query(selectedRow);
+                const queryEndTime = performance.now();
+                const queryDuration = (queryEndTime - queryStartTime).toFixed(2);
 
                 document.getElementById('queryOutput').textContent =
                     `Query generated successfully!\n` +
-                    `- Target item: ${whichItem}\n` +
-                    `- Query size: ${query.length} bytes\n` +
-                    `- Generation time: ${duration} ms\n` +
-                    `- Query preview: [${Array.from(query.slice(0, 16)).join(', ')}${query.length > 16 ? '...' : ''}]`;
+                    `- Key: ${selectedKey}\n` +
+                    `- Row: ${selectedRow}\n` +
+                    `- Query size: ${queryData.length} bytes\n` +
+                    `- Generation time: ${queryDuration} ms\n\n` +
+                    `Sending query to server...`;
+
+                // Step 2: Send query to server
+                const serverStartTime = performance.now();
+                const serverResponse = await fetch('http://localhost:8081/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/octet-stream',
+                    },
+                    body: queryData
+                });
+
+                if (!serverResponse.ok) {
+                    throw new Error(`Server query failed: ${serverResponse.status} ${serverResponse.statusText}`);
+                }
+
+                const responseData = await serverResponse.arrayBuffer();
+                const serverEndTime = performance.now();
+                const serverDuration = (serverEndTime - serverStartTime).toFixed(2);
+
+                document.getElementById('queryOutput').textContent +=
+                    `\nServer response received!\n` +
+                    `- Response size: ${responseData.byteLength} bytes\n` +
+                    `- Server time: ${serverDuration} ms\n\n` +
+                    `Extracting result...`;
+
+                // Step 3: Extract result using WASM
+                const extractStartTime = performance.now();
+                const result = client.extract_result(new Uint8Array(responseData), selectedRow);
+                const extractEndTime = performance.now();
+                const extractDuration = (extractEndTime - extractStartTime).toFixed(2);
+
+                document.getElementById('queryOutput').className = 'output';
+                document.getElementById('queryOutput').textContent +=
+                    `\nResult extraction completed!\n` +
+                    `- Extraction time: ${extractDuration} ms\n` +
+                    `- Total time: ${(extractEndTime - queryStartTime).toFixed(2)} ms`;
+
+                // Step 4: Display results
+                displayResults(result, selectedKey);
+
             } catch (error) {
-                document.getElementById('queryOutput').textContent = `Error generating query: ${error}`;
+                document.getElementById('queryOutput').className = 'output error';
+                document.getElementById('queryOutput').textContent = `Error during query: ${error.message}`;
+                console.error('Query error:', error);
             }
         };
 
-        // Extract result (demo)
-        window.extractResult = function () {
-            if (!client) {
-                document.getElementById('extractOutput').textContent = 'Please initialize client first!';
-                return;
-            }
+        // Display extracted results
+        function displayResults(result, key) {
+            const resultsDiv = document.getElementById('resultsOutput');
+            resultsDiv.className = 'output query-result';
+            console.log('Displaying results for key:', key);
+            console.log('Result length:', result.length);
+            console.log('Result:', result);
 
             try {
-                // Demo with empty response data
-                const demoResponseData = new Uint8Array(1024); // Empty response for demo
-                const whichItem = parseInt(document.getElementById('whichItem').value);
+                // Convert result to base64 string for decompression
+                let base64String = '';
 
-                const startTime = performance.now();
-                const result = client.extract_result(demoResponseData, whichItem);
-                const endTime = performance.now();
-                const duration = (endTime - startTime).toFixed(2);
+                // First, try to interpret the result as compressed data
+                if (result.length > 0) {
+                    for (let i = 0; i < result.length; i++) {
+                        const value = result[i];
+                        // Each u32 contains 2 characters: high byte and low byte
+                        const char1 = String.fromCharCode((value >> 8) & 0xFF);
+                        const char2 = String.fromCharCode(value & 0xFF);
+                        base64String += char1 + char2;
+                    }
+                }
+                console.log('Base64 string:', base64String);
 
-                document.getElementById('extractOutput').textContent =
-                    `Result extraction completed!\n` +
-                    `- Target item: ${whichItem}\n` +
-                    `- Result size: ${result.length} elements\n` +
-                    `- Extraction time: ${duration} ms\n` +
-                    `- Result preview: [${Array.from(result.slice(0, 8)).join(', ')}${result.length > 8 ? '...' : ''}]\n` +
-                    `Note: This is a demo with empty response data.`;
+                // Try to decompress and render the content
+                let renderedContent = '';
+                if (base64String) {
+                    try {
+                        const decompressedData = wikiRenderer.decompressContent(base64String);
+
+                        if (Array.isArray(decompressedData) && decompressedData.length > 0) {
+                            // If it's an array of sections, render them
+                            renderedContent = wikiRenderer.renderSections(decompressedData);
+                        } else if (typeof decompressedData === 'object' && decompressedData.content) {
+                            // If it's an object with content property
+                            renderedContent = wikiRenderer.renderSections(decompressedData.content);
+                        } else if (typeof decompressedData === 'string') {
+                            // If it's a plain string, wrap it in a paragraph
+                            renderedContent = `<p>${wikiRenderer.renderText(decompressedData)}</p>`;
+                        }
+                    } catch (decompressionError) {
+                        console.warn('Decompression failed, falling back to text interpretation:', decompressionError);
+                    }
+                }
+
+                // If rendering was successful, display the formatted content
+                if (renderedContent) {
+                    resultsDiv.innerHTML = `
+                        <h3>Article Content for "${key}":</h3>
+                        <div class="article-content">
+                            ${renderedContent}
+                        </div>
+                    `;
+                } else {
+                    // Fallback to original text interpretation
+                    let displayText = `Query Results for "${key}":\\n\\n`;
+                    displayText += `Raw result (${result.length} elements):\\n`;
+                    displayText += `[${Array.from(result.slice(0, 16)).join(', ')}${result.length > 16 ? '...' : ''}]\\n\\n`;
+
+                    // Try to interpret as text (assuming 2 bytes per character as in the original code)
+                    if (result.length > 0) {
+                        displayText += `Interpreted as text:\\n`;
+                        let textResult = '';
+                        for (let i = 0; i < Math.min(result.length, 100); i++) {
+                            const value = result[i];
+                            if (value > 0) {
+                                // Extract characters as in the original code
+                                const char1 = String.fromCharCode((value >> 8) & 0xFF);
+                                const char2 = String.fromCharCode(value & 0xFF);
+                                if (char1.match(/[\\x20-\\x7E]/)) textResult += char1;
+                                if (char2.match(/[\\x20-\\x7E]/)) textResult += char2;
+                            }
+                        }
+                        displayText += textResult || '(No readable text found)';
+                    }
+
+                    resultsDiv.textContent = displayText;
+                }
             } catch (error) {
-                document.getElementById('extractOutput').textContent = `Error extracting result: ${error}`;
+                console.error('Error processing results:', error);
+                resultsDiv.innerHTML = `
+                    <div class="error">
+                        <h3>Error processing results for "${key}"</h3>
+                        <p>Error: ${error.message}</p>
+                        <p>Raw result length: ${result.length} elements</p>
+                    </div>
+                `;
             }
-        };
+        }
+
+        // Handle internal link clicks
+        function setupInternalLinkHandlers() {
+            document.addEventListener('click', function (e) {
+                if (e.target.classList.contains('internal-link') && e.target.dataset.target) {
+                    e.preventDefault();
+
+                    const target = e.target.dataset.target;
+                    console.log('Internal link clicked:', target);
+
+                    // Convert target to lowercase with dashes for map lookup
+                    const slugifiedTarget = wikiRenderer.slugify(target);
+                    console.log('Slugified target for lookup:', slugifiedTarget);
+
+                    // Check if we have this key in our mapping
+                    if (keyToRow && keyToRow[slugifiedTarget] !== undefined) {
+                        // Select the key (this will update the UI and enable the query button)
+                        selectKey(slugifiedTarget);
+
+                        // Scroll to the search section
+                        document.querySelector('.section h2').scrollIntoView({ behavior: 'smooth' });
+
+                        // Optionally auto-trigger the query after a short delay
+                        setTimeout(() => {
+                            if (selectedKey === slugifiedTarget && !document.getElementById('fullQueryBtn').disabled) {
+                                performFullQuery();
+                            }
+                        }, 500);
+                    } else {
+                        // Key not found - show available similar keys
+                        console.warn('Key not found in database:', target);
+
+                        if (allKeys && allKeys.length > 0) {
+                            // Find similar keys using both original and slugified target
+                            const similarKeys = allKeys.filter(key =>
+                                key.toLowerCase().includes(target.toLowerCase()) ||
+                                target.toLowerCase().includes(key.toLowerCase()) ||
+                                key.toLowerCase().includes(slugifiedTarget.toLowerCase()) ||
+                                slugifiedTarget.toLowerCase().includes(key.toLowerCase())
+                            ).slice(0, 5);
+
+                            if (similarKeys.length > 0) {
+                                alert(`Key "${target}" not found. Similar keys available:\n${similarKeys.join('\n')}`);
+                            } else {
+                                alert(`Key "${target}" not found in database.`);
+                            }
+                        } else {
+                            alert(`Key "${target}" not found. Please initialize the client first.`);
+                        }
+                    }
+                }
+            });
+        }
 
         // Initialize WASM on page load
         initWasm();
+
+        // Setup internal link handlers
+        setupInternalLinkHandlers();
     </script>
 </body>
 
