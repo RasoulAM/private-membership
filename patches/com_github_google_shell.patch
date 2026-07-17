@@ -1,0 +1,97 @@
+diff -urN shell_orig/shell_encryption/BUILD shell_mod/shell_encryption/BUILD
+--- shell_orig/shell_encryption/BUILD	2026-06-23 00:00:00.000000000 +0000
++++ shell_mod/shell_encryption/BUILD	2026-06-23 00:00:00.000000000 +0000
+@@ -12,8 +12,8 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-load("@protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+-load("@protobuf//bazel:proto_library.bzl", "proto_library")
++load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
++load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+ load("@rules_license//rules:license.bzl", "license")
+ load("@rules_cc//cc:cc_library.bzl", "cc_library")
+ load("@rules_cc//cc:cc_test.bzl", "cc_test")
+diff -urN shell_orig/shell_encryption/prng/BUILD shell_mod/shell_encryption/prng/BUILD
+--- shell_orig/shell_encryption/prng/BUILD	2026-06-23 00:00:00.000000000 +0000
++++ shell_mod/shell_encryption/prng/BUILD	2026-06-23 00:00:00.000000000 +0000
+@@ -104,8 +104,8 @@
+     deps = [
+         "//shell_encryption:integral_types",
+         "//shell_encryption:statusor_fork",
+-        "@com_github_tink_crypto_tink_cc//tink/subtle",
++        "@tink_cc//subtle",
+         "@com_google_absl//absl/memory",
+         "@com_google_absl//absl/status",
+         "@com_google_absl//absl/strings",
+     ],
+diff -urN shell_orig/shell_encryption/prng/hkdf_prng_util.cc shell_mod/shell_encryption/prng/hkdf_prng_util.cc
+--- shell_orig/shell_encryption/prng/hkdf_prng_util.cc	2026-06-23 00:00:00.000000000 +0000
++++ shell_mod/shell_encryption/prng/hkdf_prng_util.cc	2026-06-23 00:00:00.000000000 +0000
+@@ -34,7 +34,7 @@
+   if (!status_or_buf.ok()) {
+     return status_or_buf.status();
+   }
+-  auto buf = std::move(status_or_buf).value();
++  auto buf = status_or_buf.ValueOrDie();
+   buffer->assign(buf.begin(), buf.end());
+   ++(*salt_counter);
+   *position_in_buffer = 0;
+diff -urN shell_orig/shell_encryption/testing/BUILD shell_mod/shell_encryption/testing/BUILD
+--- shell_orig/shell_encryption/testing/BUILD	2026-06-23 00:00:00.000000000 +0000
++++ shell_mod/shell_encryption/testing/BUILD	2026-06-23 00:00:00.000000000 +0000
+@@ -12,7 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-load("@protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+-load("@protobuf//bazel:proto_library.bzl", "proto_library")
++load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
++load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+ load("@rules_cc//cc:cc_library.bzl", "cc_library")
+ load("@rules_cc//cc:cc_test.bzl", "cc_test")
+@@ -81,7 +81,7 @@
+         "//shell_encryption:statusor_fork",
+         "@com_github_google_googletest//:gtest",
+         "@com_google_absl//absl/status",
+-        "@protobuf",
+-        "@protobuf//:differencer",
++        "@com_google_protobuf//:protobuf",
++        "@com_google_protobuf//:differencer",
+     ],
+ )
+@@ -97,7 +97,7 @@
+         "//shell_encryption:statusor_fork",
+         "@com_github_google_googletest//:gtest",
+         "@com_google_absl//absl/status",
+-        "@protobuf",
+-        "@protobuf//:differencer",
++        "@com_google_protobuf//:protobuf",
++        "@com_google_protobuf//:differencer",
+     ],
+ )
+diff -urN shell_orig/shell_encryption/rns/BUILD shell_mod/shell_encryption/rns/BUILD
+--- shell_orig/shell_encryption/rns/BUILD	2026-06-23 00:00:00.000000000 +0000
++++ shell_mod/shell_encryption/rns/BUILD	2026-06-23 00:00:00.000000000 +0000
+@@ -17,7 +17,6 @@
+-load("@protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+-load("@protobuf//bazel:proto_library.bzl", "proto_library")
++load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
++load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+ load("@rules_cc//cc:cc_library.bzl", "cc_library")
+ load("@rules_cc//cc:cc_test.bzl", "cc_test")
+-load("@protobuf//rust:defs.bzl", "rust_proto_library")
+ 
+ package(default_visibility = ["//visibility:public"])
+@@ -33,10 +32,5 @@
+     deps = [":rns_serialization_proto"],
+ )
+ 
+-rust_proto_library(
+-    name = "rns_serialization_rust_proto",
+-    deps = [":rns_serialization_proto"],
+-)
+-
+ # RNS integer.
+ cc_library(
+
