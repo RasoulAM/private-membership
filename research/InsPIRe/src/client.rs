@@ -16,13 +16,8 @@ use super::convolution::negacyclic_matrix_u32;
 use super::{lwe::*, noise_analysis::measure_noise_width_squared, scheme::*, util::*};
 
 pub fn rlwe_to_lwe<'a>(params: &'a Params, ct: &PolyMatrixRaw<'a>, how_many: usize) -> Vec<u64> {
-    // let a: &[u64] = ct.get_poly(0, 0);
-    // let mut negacylic_a = negacyclic_matrix(&a, params.modulus, how_many);
-    // negacylic_a.extend(&ct.get_poly(1, 0)[0..how_many]);
-    // negacylic_a
-
     // We only need the 'b' part of the LWE ciphertext
-    ct.get_poly(1, 0).to_vec()  // TODO: check if we need how_many
+    ct.get_poly(1, 0)[0..how_many].to_vec()
 }
 
 pub fn pack_query(params: &Params, query: &[u64]) -> AlignedMemory64 {
@@ -221,7 +216,7 @@ impl<'a> YClient<'a> {
             .map(|ct| rlwe_to_lwe(self.params, ct, how_many))
             .collect::<Vec<_>>();
         // concat_horizontal(&v, self.params.poly_len + 1, how_many) //self.params.poly_len)
-        concat_horizontal(&v, 1, self.params.poly_len)
+        concat_horizontal(&v, 1, how_many)
     }
 
     pub fn generate_query_impl(
