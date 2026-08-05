@@ -47,6 +47,8 @@ pub struct Offline {
     pub simplepir_prep_time_ms: usize,
     pub simplepir_hint_bytes: usize,
     pub doublepir_hint_bytes: usize,
+    pub server_disk_storage_bytes: usize,
+    pub server_preprocessed_size_ideal_bytes: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -64,6 +66,9 @@ pub struct Online {
     pub server_time_ms: usize,
     pub client_query_gen_time_ms: usize,
     pub client_decode_time_ms: usize,
+
+    pub server_data_load_time_us: usize,
+    pub server_response_latency_us: usize,
 
     pub first_pass_time_us: usize,
     pub second_pass_time_us: usize,

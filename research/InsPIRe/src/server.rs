@@ -623,7 +623,7 @@ where
         gamma: usize,
         measurement: Option<&mut Measurement>,
         online_only: bool
-    ) -> OfflinePrecomputedValues {
+    ) -> OfflinePrecomputedValues<'a> {
         // Set up some parameters
 
         println!(" -- Offline 1");
@@ -674,7 +674,7 @@ where
         let combined = [&hint_0[..], &vec![0u64; db_cols]].concat();
         assert_eq!(combined.len(), db_cols * (params.poly_len + 1)); // TODO: get rid of this +1 by replacing it in the underlying functions too
 
-        let prepacked_lwe = prep_pack_many_lwes(&params, &combined, db_cols_prime, gamma);
+        let prepacked_lwe = prep_pack_many_lwes(params, &combined, db_cols_prime, gamma);
         println!(" -- Offline 3");
 
         let offline_packing_keys = if self.second_level_packing_mask == PackingType::CDKS {
@@ -688,27 +688,27 @@ where
         };
         println!(" -- Offline 4");
 
-        let mut y_constants: (Vec<PolyMatrixNTT<'_>>, Vec<PolyMatrixNTT<'_>>) =
+        let mut y_constants: (Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>) =
             (Vec::new(), Vec::new());
-        let mut fake_pack_pub_params: Vec<PolyMatrixNTT<'_>> = Vec::new();
+        let mut fake_pack_pub_params: Vec<PolyMatrixNTT<'a>> = Vec::new();
 
         if self.second_level_packing_mask == PackingType::CDKS {
-            y_constants = generate_y_constants(&params);
-            fake_pack_pub_params = generate_fake_pack_pub_params(&params);
+            y_constants = generate_y_constants(params);
+            fake_pack_pub_params = generate_fake_pack_pub_params(params);
         }
 
-        let mut precomp: Precomp = Vec::with_capacity(db_cols_prime);
+        let mut precomp: Precomp<'a> = Vec::with_capacity(db_cols_prime);
         for _ in 0..db_cols_prime {
-            precomp.push((PolyMatrixNTT::zero(&params, 1, 1), Vec::new(), Vec::new()))
+            precomp.push((PolyMatrixNTT::zero(params, 1, 1), Vec::new(), Vec::new()))
         }
 
         let mut precomp_inspir_vec = Vec::with_capacity(db_cols_prime);
         for _ in 0..db_cols_prime {
             precomp_inspir_vec.push(PrecompInsPIR{
-                a_hat: PolyMatrixRaw::zero(&params, 1, 1),
-                bold_t_condensed: PolyMatrixNTT::zero(&params, 1, 1),
-                bold_t_bar_condensed: PolyMatrixNTT::zero(&params, 1, 1),
-                bold_t_hat_condensed: PolyMatrixNTT::zero(&params, 1, 1),
+                a_hat: PolyMatrixRaw::zero(params, 1, 1),
+                bold_t_condensed: PolyMatrixNTT::zero(params, 1, 1),
+                bold_t_bar_condensed: PolyMatrixNTT::zero(params, 1, 1),
+                bold_t_hat_condensed: PolyMatrixNTT::zero(params, 1, 1),
             })
         }
 
@@ -776,7 +776,7 @@ where
             precomp,
             precomp_inspir_vec_first_layer: vec![],
             precomp_inspir_vec,
-            offline_packing_keys,
+            offline_packing_keys: OfflinePackingKeys::init_empty(),
         }
     }
 
@@ -785,7 +785,7 @@ where
         gamma: usize,
         measurement: Option<&mut Measurement>,
         online_only: bool,
-    ) -> OfflinePrecomputedValues {
+    ) -> OfflinePrecomputedValues<'a> {
         // Set up some parameters
 
         let params = self.params;
@@ -838,8 +838,9 @@ where
             }
 
             assert_eq!(smaller_db.len(), db_cols * out_rows);
+            let leaked_params: &'static Params = Box::leak(Box::new(self.smaller_params.clone()));
             let smaller_server: YServer<u16> = YServer::<u16>::new_small(
-                &self.smaller_params,
+                leaked_params,
                 smaller_db.into_iter(),
                 ProtocolType::InsPIRe,
                 true,
@@ -853,14 +854,14 @@ where
             let vec_size = 1 << smaller_server.params.db_dim_1;
             let mut pseudorandom_query_1 = Vec::with_capacity(vec_size);
             for _ in 0..vec_size {
-                pseudorandom_query_1.push(PolyMatrixNTT::random(&params, 1, 1))
+                pseudorandom_query_1.push(PolyMatrixNTT::random(params, 1, 1))
             }
             let mut y_constants = (Vec::new(), Vec::new());
             let mut fake_pack_pub_params = Vec::new();
     
             let offline_packing_keys = if self.second_level_packing_mask == PackingType::CDKS {
-                y_constants = generate_y_constants(&params);
-                fake_pack_pub_params = generate_fake_pack_pub_params(&params);
+                y_constants = generate_y_constants(params);
+                fake_pack_pub_params = generate_fake_pack_pub_params(params);
                 OfflinePackingKeys::init_empty()
             } else {
                 if gamma <= params.poly_len / 2 {
@@ -878,10 +879,10 @@ where
             for _ in 0..num_rlwes {
                 if self.second_level_packing_mask == PackingType::InspiRING {
                     precomp_inspir_vec.push(PrecompInsPIR {
-                        a_hat: PolyMatrixRaw::random(&params, 1, 1),
-                        bold_t_condensed: PolyMatrixNTT::random(&params, thing_size - 1, params.t_exp_left),
-                        bold_t_bar_condensed: PolyMatrixNTT::random(&params, thing_size - 1, params.t_exp_left),
-                        bold_t_hat_condensed: PolyMatrixNTT::random(&params, 1, params.t_exp_left)
+                        a_hat: PolyMatrixRaw::random(params, 1, 1),
+                        bold_t_condensed: PolyMatrixNTT::random(params, thing_size - 1, params.t_exp_left),
+                        bold_t_bar_condensed: PolyMatrixNTT::random(params, thing_size - 1, params.t_exp_left),
+                        bold_t_hat_condensed: PolyMatrixNTT::random(params, 1, params.t_exp_left)
                     });
                 } else if self.second_level_packing_mask == PackingType::CDKS {
                     println!("No online-only CDKS");
@@ -898,7 +899,7 @@ where
                 precomp,
                 precomp_inspir_vec_first_layer: vec![],
                 precomp_inspir_vec,
-                offline_packing_keys,
+                offline_packing_keys: OfflinePackingKeys::init_empty(),
             }            
         }
 
@@ -945,8 +946,9 @@ where
         debug!("Done splitting intermediate cts.");
 
         // This is the 'intermediate' db after the first pass of PIR and expansion
+        let leaked_params: &'static Params = Box::leak(Box::new(self.smaller_params.clone()));
         let smaller_server: YServer<u16> = YServer::<u16>::new_small(
-            &self.smaller_params,
+            leaked_params,
             smaller_db.into_iter(),
             ProtocolType::DoublePIR,
             true,
@@ -1054,7 +1056,7 @@ where
         // gamma[2] is used to pack the body in the second layer
         measurement: Option<&mut Measurement>,
         online_only: bool,
-    ) -> OfflinePrecomputedValues {
+    ) -> OfflinePrecomputedValues<'a> {
         // Set up some parameters
 
         assert_eq!(self.second_level_packing_mask, PackingType::InspiRING);
@@ -1090,8 +1092,9 @@ where
             }
 
             assert_eq!(smaller_db.len(), smaller_db_total_num_cols_rounded_up * db_cols_prime);
+            let leaked_params: &'static Params = Box::leak(Box::new(self.smaller_params.clone()));
             let smaller_server: YServer<u16> = YServer::<u16>::new_small(
-                &self.smaller_params,
+                leaked_params,
                 smaller_db.into_iter(),
                 ProtocolType::InsPIRe,
                 true,
@@ -1100,17 +1103,17 @@ where
             let vec_size = 1 << smaller_server.params.db_dim_1;
             let mut pseudorandom_query_1 = Vec::with_capacity(vec_size);
             for _ in 0..vec_size {
-                pseudorandom_query_1.push(PolyMatrixNTT::random(&params, 1, 1))
+                pseudorandom_query_1.push(PolyMatrixNTT::random(params, 1, 1))
             }
 
             let mut precomp_inspir_vec_first_layer = Vec::new();
             let thing_size = if gammas[0] == params.poly_len { params.poly_len / 2 } else {gammas[0]};
             for _ in 0..db_cols_prime {
                 precomp_inspir_vec_first_layer.push(PrecompInsPIR {
-                    a_hat: PolyMatrixRaw::random(&params, 1, 1),
-                    bold_t_condensed: PolyMatrixNTT::random(&params, thing_size - 1, params.t_exp_left),
-                    bold_t_bar_condensed: PolyMatrixNTT::random(&params, thing_size - 1, params.t_exp_left),
-                    bold_t_hat_condensed: PolyMatrixNTT::random(&params, 1, params.t_exp_left)
+                    a_hat: PolyMatrixRaw::random(params, 1, 1),
+                    bold_t_condensed: PolyMatrixNTT::random(params, thing_size - 1, params.t_exp_left),
+                    bold_t_bar_condensed: PolyMatrixNTT::random(params, thing_size - 1, params.t_exp_left),
+                    bold_t_hat_condensed: PolyMatrixNTT::random(params, 1, params.t_exp_left)
                 });
             }
 
@@ -1118,10 +1121,10 @@ where
             let thing_size = if gammas[1] == params.poly_len { params.poly_len / 2 } else {gammas[1]};
             for _ in 0..mask_num_packed_rlwes {
                 precomp_inspir_vec.push(PrecompInsPIR {
-                    a_hat: PolyMatrixRaw::random(&params, 1, 1),
-                    bold_t_condensed: PolyMatrixNTT::random(&params, thing_size - 1, params.t_exp_left),
-                    bold_t_bar_condensed: PolyMatrixNTT::random(&params, thing_size - 1, params.t_exp_left),
-                    bold_t_hat_condensed: PolyMatrixNTT::random(&params, 1, params.t_exp_left)
+                    a_hat: PolyMatrixRaw::random(params, 1, 1),
+                    bold_t_condensed: PolyMatrixNTT::random(params, thing_size - 1, params.t_exp_left),
+                    bold_t_bar_condensed: PolyMatrixNTT::random(params, thing_size - 1, params.t_exp_left),
+                    bold_t_hat_condensed: PolyMatrixNTT::random(params, 1, params.t_exp_left)
                 });
             }
             let offline_packing_keys = if gammas.len() > 2 {
@@ -1143,7 +1146,7 @@ where
                 precomp: vec![],
                 precomp_inspir_vec_first_layer,
                 precomp_inspir_vec,
-                offline_packing_keys: offline_packing_keys
+                offline_packing_keys: OfflinePackingKeys::init_empty(),
             }            
         }
 
@@ -1255,8 +1258,9 @@ where
 
         let gamma_second_layer_mask = gammas[1];
         // This is the 'intermediate' db after the first pass of PIR and expansion
+        let leaked_params: &'static Params = Box::leak(Box::new(self.smaller_params.clone()));
         let smaller_server: YServer<u16> = YServer::<u16>::new_small(
-            &self.smaller_params,
+            leaked_params,
             smaller_db.into_iter(),
             ProtocolType::InsPIRe,
             true,
@@ -2175,4 +2179,158 @@ impl ToU64 for u64 {
     fn to_u64(self) -> u64 {
         self
     }
+}
+
+pub fn flush_server_state_to_disk<'a, T: Sync>(
+    server: &mut YServer<'a, T>,
+    offline_vals: &mut OfflinePrecomputedValues<'a>,
+    path: &str,
+) -> usize {
+    use std::fs::File;
+    use std::io::Write;
+    use std::slice;
+
+    let mut file = File::create(path).unwrap();
+    let mut bytes_written = 0;
+
+    let db_len = server.db_buf_aligned.len();
+    file.write_all(&db_len.to_ne_bytes()).unwrap();
+    bytes_written += 8;
+
+    let db_bytes = unsafe {
+        slice::from_raw_parts(
+            server.db_buf_aligned.as_slice().as_ptr() as *const u8,
+            db_len * 8,
+        )
+    };
+    file.write_all(db_bytes).unwrap();
+    bytes_written += db_bytes.len();
+
+    server.db_buf_aligned = AlignedMemory64::new(0);
+
+    let precomp_len = offline_vals.precomp_inspir_vec.len();
+    file.write_all(&precomp_len.to_ne_bytes()).unwrap();
+    bytes_written += 8;
+
+    for precomp in &offline_vals.precomp_inspir_vec {
+        let matrices = [
+            (&precomp.a_hat.data, precomp.a_hat.rows, precomp.a_hat.cols),
+            (&precomp.bold_t_condensed.data, precomp.bold_t_condensed.rows, precomp.bold_t_condensed.cols),
+            (&precomp.bold_t_bar_condensed.data, precomp.bold_t_bar_condensed.rows, precomp.bold_t_bar_condensed.cols),
+            (&precomp.bold_t_hat_condensed.data, precomp.bold_t_hat_condensed.rows, precomp.bold_t_hat_condensed.cols),
+        ];
+        for (mat_data, rows, cols) in matrices.iter() {
+            file.write_all(&rows.to_ne_bytes()).unwrap();
+            file.write_all(&cols.to_ne_bytes()).unwrap();
+            bytes_written += 16;
+            
+            let mat_len = mat_data.len();
+            file.write_all(&mat_len.to_ne_bytes()).unwrap();
+            bytes_written += 8;
+
+            let mat_bytes = unsafe {
+                slice::from_raw_parts(
+                    mat_data.as_slice().as_ptr() as *const u8,
+                    mat_len * 8,
+                )
+            };
+            file.write_all(mat_bytes).unwrap();
+            bytes_written += mat_bytes.len();
+        }
+    }
+
+    offline_vals.precomp_inspir_vec.clear();
+    offline_vals.precomp_inspir_vec.shrink_to_fit();
+
+    offline_vals.hint_1.clear();
+    offline_vals.hint_1.shrink_to_fit();
+    offline_vals.pseudorandom_query_1.clear();
+    offline_vals.pseudorandom_query_1.shrink_to_fit();
+    offline_vals.y_constants = (Vec::new(), Vec::new());
+    offline_vals.precomp.clear();
+    offline_vals.precomp.shrink_to_fit();
+    offline_vals.precomp_inspir_vec_first_layer.clear();
+    offline_vals.precomp_inspir_vec_first_layer.shrink_to_fit();
+
+    bytes_written
+}
+
+pub fn load_server_state_from_disk<'a, T: Sync>(
+    server: &mut YServer<'a, T>,
+    offline_vals: &mut OfflinePrecomputedValues<'a>,
+    params: &'a Params,
+    path: &str,
+) {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut file = File::open(path).unwrap();
+    let mut len_buf = [0u8; 8];
+
+    file.read_exact(&mut len_buf).unwrap();
+    let db_len = usize::from_ne_bytes(len_buf);
+
+    let mut new_db = AlignedMemory64::new(db_len);
+    let db_bytes = unsafe {
+        std::slice::from_raw_parts_mut(
+            new_db.as_mut_slice().as_mut_ptr() as *mut u8,
+            db_len * 8,
+        )
+    };
+    file.read_exact(db_bytes).unwrap();
+    server.db_buf_aligned = new_db;
+
+    file.read_exact(&mut len_buf).unwrap();
+    let precomp_len = usize::from_ne_bytes(len_buf);
+
+    let mut new_precomp = Vec::with_capacity(precomp_len);
+
+    for _ in 0..precomp_len {
+        let mut mats_raw = Vec::new();
+        let mut mats_ntt = Vec::new();
+        
+        for i in 0..4 {
+            file.read_exact(&mut len_buf).unwrap();
+            let rows = usize::from_ne_bytes(len_buf);
+            
+            file.read_exact(&mut len_buf).unwrap();
+            let cols = usize::from_ne_bytes(len_buf);
+
+            file.read_exact(&mut len_buf).unwrap();
+            let mat_len = usize::from_ne_bytes(len_buf);
+            
+            let mut data = AlignedMemory64::new(mat_len);
+            let mat_bytes = unsafe {
+                std::slice::from_raw_parts_mut(
+                    data.as_mut_slice().as_mut_ptr() as *mut u8,
+                    mat_len * 8,
+                )
+            };
+            file.read_exact(mat_bytes).unwrap();
+
+            if i == 0 {
+                let mut p = PolyMatrixRaw::zero(params, rows, cols);
+                p.data = data;
+                mats_raw.push(p);
+            } else {
+                let mut p = PolyMatrixNTT::zero(params, rows, cols);
+                p.data = data;
+                mats_ntt.push(p);
+            }
+        }
+        
+        let m1 = mats_raw.remove(0);
+        let m2 = mats_ntt.remove(0);
+        let m3 = mats_ntt.remove(0);
+        let m4 = mats_ntt.remove(0);
+
+        new_precomp.push(PrecompInsPIR {
+            a_hat: m1,
+            bold_t_condensed: m2,
+            bold_t_bar_condensed: m3,
+            bold_t_hat_condensed: m4,
+        });
+    }
+
+    offline_vals.precomp_inspir_vec = new_precomp;
 }

@@ -476,7 +476,7 @@ pub fn run_simple_ypir_rgsw_on_params(
         actual_db.push(pt_iter.next().unwrap());
     }
     let start_encode_comp = Instant::now();
-    let y_server = YServer::<T>::new_rgswpir(
+    let mut y_server = YServer::<T>::new_rgswpir(
         &params,
         &actual_db,
         interpolate_degree,
@@ -502,9 +502,12 @@ pub fn run_simple_ypir_rgsw_on_params(
 
     println!("Starting offline...");
     let start_offline_comp = Instant::now();
-    let offline_values = y_server
+    let mut offline_values = y_server
         .perform_offline_precomputation_simplepir(gamma, Some(&mut measurements[0]), online_only);
     let offline_server_time_ms = start_offline_comp.elapsed().as_millis();
+    
+    let disk_bytes = flush_server_state_to_disk(&mut y_server, &mut offline_values, "/tmp/inspire_state.bin");
+    
     println!("Done offline...");
 
     for trial in 0..trials + 1 {
@@ -512,6 +515,14 @@ pub fn run_simple_ypir_rgsw_on_params(
         let mut measurement = &mut measurements[trial];
         measurement.offline.encode_time_ms = encode_server_time_ms as usize;
         measurement.offline.server_time_ms = offline_server_time_ms as usize;
+        measurement.offline.server_disk_storage_bytes = disk_bytes;
+        
+        let t = interpolate_degree;
+        let d = params.poly_len;
+        let q_bits = params.modulus_log2 as usize;
+        let k = params.t_exp_left;
+        let server_storage_bits = t * ( (d * d * q_bits) + ((d - 2) * d * k * q_bits) + (k * d * q_bits) );
+        measurement.offline.server_preprocessed_size_ideal_bytes = server_storage_bits / 8;
 
         // ================================================================
         // QUERY GENERATION PHASE
@@ -614,6 +625,10 @@ pub fn run_simple_ypir_rgsw_on_params(
         // ================================================================
 
         println!("Starting online...");
+        let start_load = Instant::now();
+        load_server_state_from_disk(&mut y_server, &mut offline_values, &params, "/tmp/inspire_state.bin");
+        let server_data_load_time_us = start_load.elapsed().as_micros();
+
         let start_online_comp = Instant::now();
 
         let sum_switched = y_server.perform_online_computation_simplepir_and_rgsw(
@@ -626,8 +641,15 @@ pub fn run_simple_ypir_rgsw_on_params(
         );
 
         let online_server_time_ms = start_online_comp.elapsed().as_millis();
+        let server_response_latency_us = start_load.elapsed().as_micros();
+        measurement.online.server_data_load_time_us = server_data_load_time_us as usize;
+        measurement.online.server_response_latency_us = server_response_latency_us as usize;
+
         let online_download_bytes = get_size_bytes(&vec![sum_switched.clone()]);
         println!("Done online...");
+        
+        y_server.db_buf_aligned = AlignedMemory64::new(0);
+        offline_values.precomp_inspir_vec.clear();
 
         let (target_row, target_col) = (target_idx / db_cols, target_idx % db_cols);
         let target_sub_col = (target_col % (interpolate_degree * gamma)) / gamma;
