@@ -2252,6 +2252,21 @@ pub fn flush_server_state_to_disk<'a, T: Sync>(
     offline_vals.precomp_inspir_vec_first_layer.clear();
     offline_vals.precomp_inspir_vec_first_layer.shrink_to_fit();
 
+    file.sync_data().unwrap();
+
+    #[cfg(target_family = "unix")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+        extern "C" {
+            fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> i32;
+        }
+        const POSIX_FADV_DONTNEED: i32 = 4;
+        unsafe {
+            posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        }
+    }
+
     bytes_written
 }
 

@@ -448,7 +448,8 @@ pub fn run_simple_ypir_rgsw_on_params(
     params: Params,
     interpolate_degree: usize,
     trials: usize,
-    online_only: bool
+    online_only: bool,
+    write_to_file: bool,
 ) -> Measurement {
     let gamma = params.poly_len;
     let packing_type = PackingType::InspiRING;
@@ -506,7 +507,10 @@ pub fn run_simple_ypir_rgsw_on_params(
         .perform_offline_precomputation_simplepir(gamma, Some(&mut measurements[0]), online_only);
     let offline_server_time_ms = start_offline_comp.elapsed().as_millis();
     
-    let disk_bytes = flush_server_state_to_disk(&mut y_server, &mut offline_values, "/tmp/inspire_state.bin");
+    let mut disk_bytes = 0;
+    if write_to_file {
+        disk_bytes = flush_server_state_to_disk(&mut y_server, &mut offline_values, "/tmp/inspire_state.bin");
+    }
     
     println!("Done offline...");
 
@@ -626,7 +630,9 @@ pub fn run_simple_ypir_rgsw_on_params(
 
         println!("Starting online...");
         let start_load = Instant::now();
-        load_server_state_from_disk(&mut y_server, &mut offline_values, &params, "/tmp/inspire_state.bin");
+        if write_to_file {
+            load_server_state_from_disk(&mut y_server, &mut offline_values, &params, "/tmp/inspire_state.bin");
+        }
         let server_data_load_time_us = start_load.elapsed().as_micros();
 
         let start_online_comp = Instant::now();
@@ -959,6 +965,8 @@ struct Args {
     #[clap(long, short, action)]
     online_only: bool,
 
+    #[clap(long, short = 'w', action)]
+    write_to_file: bool,
 }
 
 fn main() {
@@ -974,6 +982,7 @@ fn main() {
         label,
         verbose,
         online_only,
+        write_to_file,
     } = args;
 
     if verbose {
@@ -1013,7 +1022,7 @@ fn main() {
 
     println!("DB Size={} MB", (resized_db_first_dim * resized_db_second_dim * resized_item_size_bits) as f64 / (8. * 1024. * 1024.));
 
-    let mut measurement = run_simple_ypir_rgsw_on_params(params, interpolate_degree, trials, online_only);
+    let mut measurement = run_simple_ypir_rgsw_on_params(params, interpolate_degree, trials, online_only, write_to_file);
         
     measurement.specs.resized_db_first_dim = resized_db_first_dim;
     measurement.specs.resized_db_second_dim = resized_db_second_dim;
