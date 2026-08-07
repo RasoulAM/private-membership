@@ -654,8 +654,10 @@ pub fn run_simple_ypir_rgsw_on_params(
         let online_download_bytes = get_size_bytes(&vec![sum_switched.clone()]);
         println!("Done online...");
         
-        y_server.db_buf_aligned = AlignedMemory64::new(0);
-        offline_values.precomp_inspir_vec.clear();
+        if write_to_file {
+            y_server.db_buf_aligned = AlignedMemory64::new(0);
+            offline_values.precomp_inspir_vec.clear();
+        }
 
         let (target_row, target_col) = (target_idx / db_cols, target_idx % db_cols);
         let target_sub_col = (target_col % (interpolate_degree * gamma)) / gamma;
