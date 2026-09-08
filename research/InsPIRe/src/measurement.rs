@@ -65,7 +65,7 @@ pub struct Online {
     pub doublepir_resp_bytes: usize,
     pub server_time_ms: usize,
     pub client_query_gen_time_ms: usize,
-    pub client_decode_time_ms: usize,
+    pub client_decode_time_us: usize,
 
     pub server_data_load_time_us: usize,
     pub server_response_latency_us: usize,

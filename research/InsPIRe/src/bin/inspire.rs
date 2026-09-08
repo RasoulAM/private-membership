@@ -686,7 +686,7 @@ pub fn run_simple_ypir_rgsw_on_params(
         }).collect::<Vec<_>>();
         
         let final_result = rgsw_ans.as_slice();
-        measurement.online.client_decode_time_ms = start_decode.elapsed().as_millis() as usize;
+        measurement.online.client_decode_time_us = start_decode.elapsed().as_micros() as usize;
 
         if online_only {
             println!("Warning!")

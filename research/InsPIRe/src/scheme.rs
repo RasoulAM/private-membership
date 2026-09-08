@@ -318,7 +318,7 @@ pub fn run_simple_ypir_on_params(
             // debug!("outer_ct: {:?}", &outer_ct[..]);
             // let outer_ct_t_u8 = u64s_to_contiguous_bytes(&outer_ct, pt_bits);
             let final_result = outer_ct.as_slice();
-            measurement.online.client_decode_time_ms = start_decode.elapsed().as_millis() as usize;
+            measurement.online.client_decode_time_us = start_decode.elapsed().as_micros() as usize;
 
             // debug!("got      {:?}", &final_result[..256]);
             // debug!("expected {:?}", &corr_result[..256]);
@@ -663,7 +663,7 @@ pub fn run_ypir_on_params(
             let decrypted = y_client.lwe_client().decrypt(&inner_ct_as_u32);
             let final_result = rescale(decrypted as u64, lwe_params.modulus, lwe_params.pt_modulus);
 
-            measurement.online.client_decode_time_ms = start_decode.elapsed().as_millis() as usize;
+            measurement.online.client_decode_time_us = start_decode.elapsed().as_micros() as usize;
 
             debug!("got {}, expected {}", final_result, corr_result);
             // debug!("was correct? {}", final_result == corr_result);
@@ -1027,7 +1027,7 @@ pub fn run_ypir_with_medium_payload_on_params(
             let final_result = decrypted_rlwe[target_col % gamma_first_layer];
             debug!("decrypted_rlwe: {}", final_result);
 
-            measurement.online.client_decode_time_ms = start_decode.elapsed().as_millis() as usize;
+            measurement.online.client_decode_time_us = start_decode.elapsed().as_micros() as usize;
 
             debug!("got {}, expected {}", final_result, corr_result);
             if online_only {
