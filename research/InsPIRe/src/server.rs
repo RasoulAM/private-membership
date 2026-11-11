@@ -2349,3 +2349,332 @@ pub fn load_server_state_from_disk<'a, T: Sync>(
 
     offline_vals.precomp_inspir_vec = new_precomp;
 }
+
+// ============================================================================
+// Compact SSD format (v2)
+// ============================================================================
+//
+// Stores exactly the database-dependent state that the online phase reads:
+//   * the (interpolated) database, u16 per entry, as in memory;
+//   * for each RLWE output, the InspiRING precomputation `PrecompInsPIR`:
+//     `a_hat` (raw poly) and the three *condensed* NTT matrices.
+// A condensed NTT poly packs both CRT residues into the low `poly_len` u64
+// words of its `2 * poly_len`-word slot (see `condense_matrix`); the upper
+// `poly_len` words are always zero and are never read by the online kernels
+// (`fast_multiply_no_reduce_in_range` only touches the first `poly_len` words
+// of every slot). The legacy format wrote these zero words to disk, inflating
+// the precomputation 2x. The compact format omits them and reads every poly
+// directly into its slot in a freshly allocated (lazily zeroed) matrix, so the
+// in-memory structures are bit-identical to the ones the offline phase built.
+//
+// All headers come first so that the payload is one contiguous region, read
+// sequentially either with `readv` straight into the destination buffers
+// (default) or with one large `read` into a staging buffer followed by memcpy.
+
+const SSD_MAGIC: u64 = 0x3253_5344_5053_4e49; // little-endian bytes "INSPDSS2"
+const SSD_VERSION: u64 = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SsdLoadMethod {
+    /// `readv` with up to IOV_MAX iovecs per call, directly into destinations.
+    Readv,
+    /// One large sequential `read` into a staging buffer, then memcpy.
+    Staging,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SsdLoadStats {
+    pub read_us: u128,
+    pub parse_us: u128,
+    pub derive_us: u128,
+    pub bytes_read: usize,
+}
+
+impl SsdLoadStats {
+    pub fn total_us(&self) -> u128 {
+        self.read_us + self.parse_us + self.derive_us
+    }
+}
+
+fn condensed_words_per_poly(params: &Params) -> usize {
+    // Words of each NTT poly slot that carry data after `condense_matrix`.
+    if params.crt_count == 2 { params.poly_len } else { params.crt_count * params.poly_len }
+}
+
+#[cfg(target_family = "unix")]
+fn evict_from_page_cache(file: &std::fs::File) {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> i32;
+    }
+    const POSIX_FADV_DONTNEED: i32 = 4;
+    unsafe {
+        posix_fadvise(file.as_raw_fd(), 0, 0, POSIX_FADV_DONTNEED);
+    }
+}
+
+/// Evicts `path` from the page cache (untimed; call before every timed load so
+/// that every trial reads from the SSD, not only the first).
+pub fn evict_file_from_page_cache(path: &str) {
+    if let Ok(file) = std::fs::File::open(path) {
+        #[cfg(target_family = "unix")]
+        evict_from_page_cache(&file);
+    }
+}
+
+/// Size in bytes of the database-independent, parameter-derived state that the
+/// server keeps resident (automorphism tables, monomial NTTs, ...).
+pub fn pack_params_size_bytes(pp: &PackParams) -> usize {
+    let mut b = 0usize;
+    for t in pp.tables.iter() {
+        b += t.len() * std::mem::size_of::<usize>();
+    }
+    b += pp.gen_pows.len() * std::mem::size_of::<usize>();
+    b += pp.mod_inv_poly.data.len() * 8;
+    for m in pp.monomial_ntts.iter().chain(pp.neg_monomial_ntts.iter()) {
+        b += m.data.len() * 8;
+    }
+    b
+}
+
+pub fn flush_server_state_to_disk_compact<'a, T: Sync>(
+    server: &mut YServer<'a, T>,
+    offline_vals: &mut OfflinePrecomputedValues<'a>,
+    path: &str,
+) -> usize {
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
+
+    let params = server.params;
+    let poly_len = params.poly_len;
+    let slot = params.crt_count * poly_len;
+    let cw = condensed_words_per_poly(params);
+
+    let file = File::create(path).unwrap();
+    let mut w = BufWriter::with_capacity(8 << 20, file);
+    let mut bytes_written = 0usize;
+    let mut put_u64 = |w: &mut BufWriter<File>, v: u64, n: &mut usize| {
+        w.write_all(&v.to_le_bytes()).unwrap();
+        *n += 8;
+    };
+    let put_words = |w: &mut BufWriter<File>, s: &[u64], n: &mut usize| {
+        let bytes = unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, s.len() * 8) };
+        w.write_all(bytes).unwrap();
+        *n += bytes.len();
+    };
+
+    // ---- header ----
+    let precomp = &offline_vals.precomp_inspir_vec;
+    put_u64(&mut w, SSD_MAGIC, &mut bytes_written);
+    put_u64(&mut w, SSD_VERSION, &mut bytes_written);
+    put_u64(&mut w, server.db_buf_aligned.len() as u64, &mut bytes_written);
+    put_u64(&mut w, precomp.len() as u64, &mut bytes_written);
+    put_u64(&mut w, cw as u64, &mut bytes_written);
+    for p in precomp.iter() {
+        for (r, c) in [
+            (p.a_hat.rows, p.a_hat.cols),
+            (p.bold_t_condensed.rows, p.bold_t_condensed.cols),
+            (p.bold_t_bar_condensed.rows, p.bold_t_bar_condensed.cols),
+            (p.bold_t_hat_condensed.rows, p.bold_t_hat_condensed.cols),
+        ] {
+            put_u64(&mut w, r as u64, &mut bytes_written);
+            put_u64(&mut w, c as u64, &mut bytes_written);
+        }
+    }
+
+    // ---- payload ----
+    put_words(&mut w, server.db_buf_aligned.as_slice(), &mut bytes_written);
+    for p in precomp.iter() {
+        put_words(&mut w, p.a_hat.data.as_slice(), &mut bytes_written);
+        for m in [&p.bold_t_condensed, &p.bold_t_bar_condensed, &p.bold_t_hat_condensed] {
+            let d = m.data.as_slice();
+            for k in 0..m.rows * m.cols {
+                let s = &d[k * slot..(k + 1) * slot];
+                debug_assert!(s[cw..].iter().all(|&x| x == 0));
+                put_words(&mut w, &s[..cw], &mut bytes_written);
+            }
+        }
+    }
+
+    let file = w.into_inner().unwrap();
+    file.sync_data().unwrap();
+    #[cfg(target_family = "unix")]
+    evict_from_page_cache(&file);
+    drop(file);
+
+    // Drop every in-memory copy of database-dependent state.
+    server.db_buf_aligned = AlignedMemory64::new(0);
+    offline_vals.precomp_inspir_vec.clear();
+    offline_vals.precomp_inspir_vec.shrink_to_fit();
+    offline_vals.hint_1.clear();
+    offline_vals.hint_1.shrink_to_fit();
+    offline_vals.pseudorandom_query_1.clear();
+    offline_vals.pseudorandom_query_1.shrink_to_fit();
+    offline_vals.y_constants = (Vec::new(), Vec::new());
+    offline_vals.precomp.clear();
+    offline_vals.precomp.shrink_to_fit();
+    offline_vals.precomp_inspir_vec_first_layer.clear();
+    offline_vals.precomp_inspir_vec_first_layer.shrink_to_fit();
+
+    bytes_written
+}
+
+#[repr(C)]
+struct IoVec {
+    base: *mut u8,
+    len: usize,
+}
+
+/// Reads exactly the concatenation of `segs` from the current file position,
+/// using `readv` with at most 1024 iovecs per call.
+#[cfg(target_family = "unix")]
+fn readv_exact(file: &std::fs::File, segs: &mut [IoVec]) {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn readv(fd: i32, iov: *const IoVec, iovcnt: i32) -> isize;
+    }
+    const IOV_MAX: usize = 1024;
+    let fd = file.as_raw_fd();
+    let mut i = 0;
+    while i < segs.len() {
+        let cnt = std::cmp::min(IOV_MAX, segs.len() - i);
+        let r = unsafe { readv(fd, segs[i..].as_ptr(), cnt as i32) };
+        if r < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            panic!("readv failed: {}", e);
+        }
+        assert!(r > 0, "unexpected EOF in readv");
+        let mut r = r as usize;
+        while r > 0 {
+            if r >= segs[i].len {
+                r -= segs[i].len;
+                segs[i].len = 0;
+                i += 1;
+            } else {
+                segs[i].base = unsafe { segs[i].base.add(r) };
+                segs[i].len -= r;
+                r = 0;
+            }
+        }
+        while i < segs.len() && segs[i].len == 0 {
+            i += 1;
+        }
+    }
+}
+
+pub fn load_server_state_from_disk_compact<'a, T: Sync>(
+    server: &mut YServer<'a, T>,
+    offline_vals: &mut OfflinePrecomputedValues<'a>,
+    params: &'a Params,
+    path: &str,
+    method: SsdLoadMethod,
+    fadvise_sequential: bool,
+) -> SsdLoadStats {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut stats = SsdLoadStats::default();
+    let t_read = Instant::now();
+
+    let mut file = File::open(path).unwrap();
+    #[cfg(target_family = "unix")]
+    if fadvise_sequential {
+        use std::os::unix::io::AsRawFd;
+        extern "C" {
+            fn posix_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> i32;
+        }
+        const POSIX_FADV_SEQUENTIAL: i32 = 2;
+        unsafe {
+            posix_fadvise(file.as_raw_fd(), 0, 0, POSIX_FADV_SEQUENTIAL);
+        }
+    }
+
+    // ---- header (small) ----
+    let mut hdr = [0u8; 40];
+    file.read_exact(&mut hdr).unwrap();
+    let h = |i: usize| u64::from_le_bytes(hdr[i * 8..i * 8 + 8].try_into().unwrap()) as usize;
+    assert_eq!(h(0) as u64, SSD_MAGIC, "bad InsPIRe SSD file magic");
+    assert_eq!(h(1) as u64, SSD_VERSION, "bad InsPIRe SSD file version");
+    let db_len = h(2);
+    let precomp_len = h(3);
+    let cw = h(4);
+    assert_eq!(cw, condensed_words_per_poly(params));
+    let mut dims_bytes = vec![0u8; precomp_len * 8 * 8];
+    file.read_exact(&mut dims_bytes).unwrap();
+    stats.bytes_read += hdr.len() + dims_bytes.len();
+    let dims: Vec<usize> = dims_bytes
+        .chunks_exact(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()) as usize)
+        .collect();
+
+    // ---- allocate destinations (lazily zeroed) and list file segments ----
+    let t_alloc = Instant::now();
+    let slot = params.crt_count * params.poly_len;
+    let mut new_db = AlignedMemory64::new(db_len);
+    let mut new_precomp: Vec<PrecompInsPIR<'a>> = Vec::with_capacity(precomp_len);
+    for i in 0..precomp_len {
+        let d = &dims[i * 8..i * 8 + 8];
+        new_precomp.push(PrecompInsPIR {
+            a_hat: PolyMatrixRaw::zero(params, d[0], d[1]),
+            bold_t_condensed: PolyMatrixNTT::zero(params, d[2], d[3]),
+            bold_t_bar_condensed: PolyMatrixNTT::zero(params, d[4], d[5]),
+            bold_t_hat_condensed: PolyMatrixNTT::zero(params, d[6], d[7]),
+        });
+    }
+    let mut segs: Vec<IoVec> = Vec::new();
+    unsafe {
+        segs.push(IoVec { base: new_db.as_mut_ptr() as *mut u8, len: db_len * 8 });
+        for p in new_precomp.iter_mut() {
+            let n = p.a_hat.data.len();
+            segs.push(IoVec { base: p.a_hat.data.as_mut_ptr() as *mut u8, len: n * 8 });
+            for m in [
+                &mut p.bold_t_condensed,
+                &mut p.bold_t_bar_condensed,
+                &mut p.bold_t_hat_condensed,
+            ] {
+                let base = m.data.as_mut_ptr();
+                for k in 0..m.rows * m.cols {
+                    segs.push(IoVec { base: base.add(k * slot) as *mut u8, len: cw * 8 });
+                }
+            }
+        }
+    }
+    let payload: usize = segs.iter().map(|s| s.len).sum();
+    let alloc_us = t_alloc.elapsed().as_micros();
+
+    match method {
+        SsdLoadMethod::Readv => {
+            #[cfg(target_family = "unix")]
+            readv_exact(&file, &mut segs);
+            stats.bytes_read += payload;
+            stats.read_us = t_read.elapsed().as_micros() - alloc_us;
+            stats.parse_us = alloc_us;
+        }
+        SsdLoadMethod::Staging => {
+            let mut staging = AlignedMemory64::new((payload + 7) / 8);
+            let sbytes = unsafe {
+                std::slice::from_raw_parts_mut(staging.as_mut_ptr() as *mut u8, payload)
+            };
+            file.read_exact(sbytes).unwrap();
+            stats.bytes_read += payload;
+            stats.read_us = t_read.elapsed().as_micros() - alloc_us;
+            let t_parse = Instant::now();
+            let mut off = 0usize;
+            for s in segs.iter() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(sbytes.as_ptr().add(off), s.base, s.len);
+                }
+                off += s.len;
+            }
+            drop(staging);
+            stats.parse_us = alloc_us + t_parse.elapsed().as_micros();
+        }
+    }
+
+    server.db_buf_aligned = new_db;
+    offline_vals.precomp_inspir_vec = new_precomp;
+    stats
+}

@@ -49,6 +49,10 @@ pub struct Offline {
     pub doublepir_hint_bytes: usize,
     pub server_disk_storage_bytes: usize,
     pub server_preprocessed_size_ideal_bytes: usize,
+    // Database-independent server state (derived only from the public
+    // parameters) that stays resident in RAM across databases.
+    #[serde(default)]
+    pub server_seed_state_in_memory_bytes: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -69,6 +73,17 @@ pub struct Online {
 
     pub server_data_load_time_us: usize,
     pub server_response_latency_us: usize,
+
+    // SSD-mode load breakdown (server_data_load_time_us = read + parse + derive).
+    #[serde(default)]
+    pub server_load_read_time_us: usize,
+    #[serde(default)]
+    pub server_load_parse_time_us: usize,
+    #[serde(default)]
+    pub server_load_derive_time_us: usize,
+    // Query answering only (server_response_latency_us = load + compute).
+    #[serde(default)]
+    pub server_compute_time_us: usize,
 
     pub first_pass_time_us: usize,
     pub second_pass_time_us: usize,

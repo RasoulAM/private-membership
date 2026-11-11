@@ -28,6 +28,97 @@ use inspire::interpolate::*;
 use std::{marker::PhantomData, time::Instant};
 use std::collections::HashMap;
 
+/// Global allocator: large allocations (>= 4 MiB) are served by anonymous
+/// `mmap`, so `alloc_zeroed` is lazy (the kernel provides zero pages on first
+/// touch) instead of an eager memset.
+///
+/// Why: spiral-rs' `AlignedMemory64::new` calls `alloc_zeroed` with 64-byte
+/// alignment. Rust's `System` allocator only forwards `alloc_zeroed` to
+/// `calloc` when align <= 16; for larger alignments it does
+/// `posix_memalign` + `memset`, i.e. it page-faults and zeroes every byte of
+/// every large matrix up front (~80 ms per 268 MB measured here). In SSD mode
+/// that happens for every destination buffer right before it is overwritten by
+/// the load. This allocator just restores what `calloc` does for
+/// small-aligned large blocks. Set INSPIRE_LAZY_ZERO_ALLOC=0 to disable.
+mod lazy_zero_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    const THRESHOLD: usize = 4 << 20;
+    const PAGE: usize = 4096;
+    // 0 = unknown, 1 = enabled, 2 = disabled
+    static STATE: AtomicU8 = AtomicU8::new(0);
+
+    extern "C" {
+        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
+        fn munmap(addr: *mut u8, len: usize) -> i32;
+        fn getenv(name: *const u8) -> *const u8;
+    }
+
+    fn enabled() -> bool {
+        match STATE.load(Ordering::Relaxed) {
+            1 => true,
+            2 => false,
+            _ => {
+                // getenv does not allocate.
+                let v = unsafe { getenv(b"INSPIRE_LAZY_ZERO_ALLOC\0".as_ptr()) };
+                let on = v.is_null() || unsafe { *v } != b'0';
+                STATE.store(if on { 1 } else { 2 }, Ordering::Relaxed);
+                on
+            }
+        }
+    }
+
+    #[inline]
+    fn use_mmap(layout: &Layout) -> bool {
+        // The decision depends only on the layout (and a value fixed at the
+        // first allocation), so alloc and dealloc always agree.
+        layout.size() >= THRESHOLD && layout.align() <= PAGE && enabled()
+    }
+
+    pub struct LazyZeroAlloc;
+
+    unsafe impl GlobalAlloc for LazyZeroAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if use_mmap(&layout) {
+                let p = mmap(std::ptr::null_mut(), layout.size(), 3 /* RW */, 0x22 /* PRIVATE|ANON */, -1, 0);
+                if p as isize == -1 { std::ptr::null_mut() } else { p }
+            } else {
+                System.alloc(layout)
+            }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            if use_mmap(&layout) {
+                self.alloc(layout) // fresh anonymous pages are zero
+            } else {
+                System.alloc_zeroed(layout)
+            }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if use_mmap(&layout) {
+                munmap(ptr, layout.size());
+            } else {
+                System.dealloc(ptr, layout)
+            }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
+            if !use_mmap(&layout) && !use_mmap(&new_layout) {
+                return System.realloc(ptr, layout, new_size);
+            }
+            let new_ptr = self.alloc(new_layout);
+            if !new_ptr.is_null() {
+                std::ptr::copy_nonoverlapping(ptr, new_ptr, std::cmp::min(layout.size(), new_size));
+                self.dealloc(ptr, layout);
+            }
+            new_ptr
+        }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: lazy_zero_alloc::LazyZeroAlloc = lazy_zero_alloc::LazyZeroAlloc;
+
 pub const RGSW_SEEDS: [[u8; 32]; 6] = [
     [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,],
     [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,],
@@ -444,12 +535,26 @@ pub fn deserialize_everything<'a>(
 }
 
 
+/// How server state is stored on / loaded from the SSD in write_to_file mode.
+#[derive(Clone, Copy, Debug)]
+pub struct SsdOptions {
+    /// Use the original (legacy) on-disk format and loader.
+    pub legacy_format: bool,
+    /// Loader for the compact format.
+    pub method: SsdLoadMethod,
+    /// posix_fadvise(SEQUENTIAL) on the file before loading.
+    pub fadvise_sequential: bool,
+}
+
+const SSD_STATE_PATH: &str = "/tmp/inspire_state.bin";
+
 pub fn run_simple_ypir_rgsw_on_params(
     params: Params,
     interpolate_degree: usize,
     trials: usize,
     online_only: bool,
     write_to_file: bool,
+    ssd: SsdOptions,
 ) -> Measurement {
     let gamma = params.poly_len;
     let packing_type = PackingType::InspiRING;
@@ -509,8 +614,18 @@ pub fn run_simple_ypir_rgsw_on_params(
     
     let mut disk_bytes = 0;
     if write_to_file {
-        disk_bytes = flush_server_state_to_disk(&mut y_server, &mut offline_values, "/tmp/inspire_state.bin");
+        disk_bytes = if ssd.legacy_format {
+            flush_server_state_to_disk(&mut y_server, &mut offline_values, SSD_STATE_PATH)
+        } else {
+            flush_server_state_to_disk_compact(&mut y_server, &mut offline_values, SSD_STATE_PATH)
+        };
     }
+    // Database-independent state derived only from the public parameters
+    // (automorphism tables, monomial NTTs, ...) stays resident in every mode.
+    let seed_state_bytes: usize = y_server.packing_params_set.values()
+        .chain(y_server.half_packing_params_set.values())
+        .map(|pp| pack_params_size_bytes(pp))
+        .sum();
     
     println!("Done offline...");
 
@@ -520,6 +635,7 @@ pub fn run_simple_ypir_rgsw_on_params(
         measurement.offline.encode_time_ms = encode_server_time_ms as usize;
         measurement.offline.server_time_ms = offline_server_time_ms as usize;
         measurement.offline.server_disk_storage_bytes = disk_bytes;
+        measurement.offline.server_seed_state_in_memory_bytes = seed_state_bytes;
         
         let t = interpolate_degree;
         let d = params.poly_len;
@@ -629,9 +745,21 @@ pub fn run_simple_ypir_rgsw_on_params(
         // ================================================================
 
         println!("Starting online...");
-        let start_load = Instant::now();
         if write_to_file {
-            load_server_state_from_disk(&mut y_server, &mut offline_values, &params, "/tmp/inspire_state.bin");
+            // Untimed: make sure every trial (not only the first) reads from the SSD.
+            evict_file_from_page_cache(SSD_STATE_PATH);
+        }
+        let start_load = Instant::now();
+        let mut load_stats = SsdLoadStats::default();
+        if write_to_file {
+            if ssd.legacy_format {
+                load_server_state_from_disk(&mut y_server, &mut offline_values, &params, SSD_STATE_PATH);
+                load_stats.read_us = start_load.elapsed().as_micros();
+            } else {
+                load_stats = load_server_state_from_disk_compact(
+                    &mut y_server, &mut offline_values, &params, SSD_STATE_PATH,
+                    ssd.method, ssd.fadvise_sequential);
+            }
         }
         let server_data_load_time_us = start_load.elapsed().as_micros();
 
@@ -646,9 +774,14 @@ pub fn run_simple_ypir_rgsw_on_params(
             Some(&mut measurement),
         );
 
-        let online_server_time_ms = start_online_comp.elapsed().as_millis();
+        let server_compute_time_us = start_online_comp.elapsed().as_micros();
+        let online_server_time_ms = server_compute_time_us / 1000;
         let server_response_latency_us = start_load.elapsed().as_micros();
         measurement.online.server_data_load_time_us = server_data_load_time_us as usize;
+        measurement.online.server_load_read_time_us = load_stats.read_us as usize;
+        measurement.online.server_load_parse_time_us = load_stats.parse_us as usize;
+        measurement.online.server_load_derive_time_us = load_stats.derive_us as usize;
+        measurement.online.server_compute_time_us = server_compute_time_us as usize;
         measurement.online.server_response_latency_us = server_response_latency_us as usize;
 
         let online_download_bytes = get_size_bytes(&vec![sum_switched.clone()]);
@@ -969,6 +1102,21 @@ struct Args {
 
     #[clap(long, short = 'w', action)]
     write_to_file: bool,
+
+    /// SSD mode: on-disk format, "compact" (default; omits the always-zero
+    /// upper halves of condensed NTT polys) or "legacy" (original format).
+    #[clap(long, default_value = "compact")]
+    ssd_format: String,
+
+    /// SSD mode, compact format: loader, "readv" (default; scatter-read
+    /// directly into the destination buffers) or "staging" (one large read
+    /// into a staging buffer + memcpy).
+    #[clap(long, default_value = "readv")]
+    ssd_load: String,
+
+    /// SSD mode, compact format: posix_fadvise(POSIX_FADV_SEQUENTIAL) first.
+    #[clap(long, action)]
+    ssd_fadvise_seq: bool,
 }
 
 fn main() {
@@ -985,7 +1133,26 @@ fn main() {
         verbose,
         online_only,
         write_to_file,
+        ssd_format,
+        ssd_load,
+        ssd_fadvise_seq,
     } = args;
+    let ssd = SsdOptions {
+        legacy_format: match ssd_format.as_str() {
+            "compact" => false,
+            "legacy" => true,
+            _ => panic!("--ssd-format must be compact or legacy"),
+        },
+        method: match ssd_load.as_str() {
+            "readv" => SsdLoadMethod::Readv,
+            "staging" => SsdLoadMethod::Staging,
+            _ => panic!("--ssd-load must be readv or staging"),
+        },
+        fadvise_sequential: ssd_fadvise_seq,
+    };
+    if write_to_file {
+        println!("SSD options: {:?}", ssd);
+    }
 
     if verbose {
         println!("Running in verbose mode.");
@@ -1024,7 +1191,7 @@ fn main() {
 
     println!("DB Size={} MB", (resized_db_first_dim * resized_db_second_dim * resized_item_size_bits) as f64 / (8. * 1024. * 1024.));
 
-    let mut measurement = run_simple_ypir_rgsw_on_params(params, interpolate_degree, trials, online_only, write_to_file);
+    let mut measurement = run_simple_ypir_rgsw_on_params(params, interpolate_degree, trials, online_only, write_to_file, ssd);
         
     measurement.specs.resized_db_first_dim = resized_db_first_dim;
     measurement.specs.resized_db_second_dim = resized_db_second_dim;
@@ -1037,6 +1204,20 @@ fn main() {
     measurement.specs.input_database_size_mb = (num_items * item_size_bits) as f64 / (8. * 1024. * 1024.);
     measurement.specs.interpolate_degree = interpolate_degree;
     measurement.specs.label = label;
+
+    // Harness-parsable summary lines (printed before the JSON "Result:" block).
+    {
+        let off = &measurement.offline;
+        let on = &measurement.online;
+        println!("Server Long term Storage: {} bytes", off.server_disk_storage_bytes);
+        println!("Server Seed-Derived State In Memory: {} bytes", off.server_seed_state_in_memory_bytes);
+        println!("Server Total Load Time: {} us", on.server_data_load_time_us);
+        println!("Server Load Read Time: {} us", on.server_load_read_time_us);
+        println!("Server Load Parse Time: {} us", on.server_load_parse_time_us);
+        println!("Server Load Derive Time: {} us", on.server_load_derive_time_us);
+        println!("Server Compute Time: {} us", on.server_compute_time_us);
+        println!("Server Response Latency: {} us", on.server_response_latency_us);
+    }
 
     if let Some(out_report_json) = out_report_json {
         println!("Writing report to {}", out_report_json);
