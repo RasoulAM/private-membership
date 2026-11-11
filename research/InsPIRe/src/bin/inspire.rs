@@ -825,6 +825,7 @@ pub fn run_simple_ypir_rgsw_on_params(
             println!("Warning!")
         } else {
             assert_eq!(final_result, sub_corr_result);
+            println!("Correctness check: PASSED (retrieved record matches the database)");
         }
 
         measurement.online.upload_keys = pub_params_size;
