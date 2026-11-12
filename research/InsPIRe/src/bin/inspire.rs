@@ -748,6 +748,7 @@ pub fn run_simple_ypir_rgsw_on_params(
         if write_to_file {
             // Untimed: make sure every trial (not only the first) reads from the SSD.
             evict_file_from_page_cache(SSD_STATE_PATH);
+            print_page_cache_residency_before_load(&[SSD_STATE_PATH]);
         }
         let start_load = Instant::now();
         let mut load_stats = SsdLoadStats::default();
